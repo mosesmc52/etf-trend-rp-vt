@@ -1,0 +1,1 @@
+30 7 * * 1-5 root /app/run.sh >> /var/log/cron.log 2>&1

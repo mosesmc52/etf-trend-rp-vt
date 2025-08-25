@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "[$(date)] Running Pead Trading Algo..."
+cd /app/
+poetry run python algo.py

@@ -1,0 +1,7 @@
+version: '3.7'
+
+services:
+  trend-algo:
+    build: .
+    env_file:
+      - ./.env
