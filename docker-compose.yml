@@ -1,7 +1,14 @@
 version: '3.7'
 
 services:
-  trend-algo:
+  algo:
+    stdin_open: true
+    tty: true
     build: .
+    volumes:
+      - .:/app
     env_file:
       - ./.env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1

@@ -3,11 +3,12 @@ import json
 import math
 import os
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 import alpaca_trade_api as tradeapi
 import numpy as np
 import pandas as pd
+import pandas_market_calendars as mcal
 from alpaca_trade_api.rest import APIError, TimeFrame
 from log import log
 
@@ -18,7 +19,7 @@ EMA_ALPHA = 0.40  # None to disable
 VT_TARGET = 0.10  # None to disable
 VT_LKBK = 60
 GROSS_CAP = 1.25
-REB = "M"  # "M" = month-end rebalance
+REB = "W"  # "M" = week-end rebalance
 
 
 # Live-trading knobs
@@ -160,12 +161,85 @@ def _month_end_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return df.groupby([idx.year, idx.month]).tail(1).index
 
 
+# --- add this helper ---
+def _last_trading_day_of_week(today: pd.Timestamp) -> pd.Timestamp:
+    """
+    Return the last trading day (as a date-like Timestamp, tz-naive, normalized)
+    for the ISO week containing `today`.
+
+    Tries pandas-market-calendars (XNYS). Falls back to calendar Friday if not available.
+    """
+    # Normalize 'today' to a date-like ts
+    today = pd.Timestamp(today).tz_localize(None).normalize()
+
+    # Week bounds (Mon..Sun)
+    week_start = today - pd.Timedelta(days=today.weekday())  # Monday
+    week_end = week_start + pd.Timedelta(days=6)  # Sunday
+
+    # Try robust exchange calendar if installed
+
+    nyse = mcal.get_calendar("XNYS")
+    sched = nyse.schedule(start_date=week_start.date(), end_date=week_end.date())
+    if not sched.empty:
+        # Index are session dates with tz; take last, drop tz and time
+        last = pd.Timestamp(sched.index[-1]).tz_localize(None).normalize()
+        return last
+
+    # Fallback: calendar Friday of this week (W-FRI anchored period end)
+    end_of_week = today.to_period("W-FRI").end_time.normalize()
+    return end_of_week
+
+
+# --- optionally keep this for other callers (completed weeks index) ---
+def _week_end_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """
+    Last trading day of each *completed* week from `idx`.
+    (Excludes the current, possibly incomplete, week.)
+    """
+    if len(idx) == 0:
+        return idx
+
+    idx = pd.DatetimeIndex(idx).tz_localize(None).normalize()
+    # Group by ISO year/week and take last in each group
+    df = pd.Series(1, index=idx)
+    week_last = (
+        df.groupby([idx.isocalendar().year, idx.isocalendar().week]).tail(1).index
+    )
+
+    # Drop the current week’s last day (to avoid midweek rebalance)
+    today_week = idx[-1].isocalendar().week
+    today_year = idx[-1].isocalendar().year
+    mask = ~(
+        (week_last.isocalendar().year == today_year)
+        & (week_last.isocalendar().week == today_week)
+    )
+    return week_last[mask]
+
+
+# --- replace your _is_rebalance_day with this ---
 def _is_rebalance_day(
     idx: pd.DatetimeIndex, today: pd.Timestamp, reb_rule: str
 ) -> bool:
-    if reb_rule.upper().startswith("M"):
-        return today.normalize() in _month_end_index(idx)
-    return True  # default: always rebalance
+    """
+    - 'M': last trading day of month (from index)
+    - 'W': last trading day of week (via exchange calendar if available; else Friday)
+    - otherwise: always True
+    """
+    rule = (reb_rule or "").upper()
+    today = pd.Timestamp(today).tz_localize(None).normalize()
+
+    if rule.startswith("M"):
+
+        # Month-end based on available trading days in idx
+        me = _month_end_index(pd.DatetimeIndex(idx).tz_localize(None))
+        return today in me
+
+    if rule.startswith("W"):
+
+        ldw = _last_trading_day_of_week(today)
+        return today == ldw
+
+    return True
 
 
 # ==========================================
@@ -326,6 +400,7 @@ def compute_today_target_weights(
     today = px.index[-1]
 
     # Respect month-end schedule unless forced
+
     if not force_rebalance and not _is_rebalance_day(px.index, today, REB):
         return None, {"reason": "not a rebalance day", "date": str(today.date())}, px
 
@@ -482,15 +557,36 @@ def equality_or_none(x):
 # ==========================================
 # Optional: simple pretty printer
 # ==========================================
-def print_orders_table(result: Dict):
-    meta = result.get("meta", {})
+def print_orders_table(result: dict):
+
+    def fmt_num(x, prec=3):
+        return f"{x:.{prec}f}" if isinstance(x, (int, float)) and pd.notna(x) else "N/A"
+
+    meta = result.get("meta", {}) or {}
+    date = meta.get("date", "N/A")
+    reason = meta.get("reason")  # present when it's not a rebalance day
+    on = meta.get("on_sleeves", [])
+    gross = fmt_num(meta.get("gross_sleeves"))
+    cash = fmt_num(meta.get("cash_weight"))
+
+    if reason:
+        print(f"Rebalance date: {date} | reason={reason}")
+        if not result.get("orders"):
+            print("(No orders)")
+        return
+
     print(
-        f"Rebalance date: {meta.get('date')} | sleeves_on={meta.get('on_sleeves')} "
-        f"| gross_sleeves={meta.get('gross_sleeves')} | cash={meta.get('cash_weight'):.3f}"
+        f"Rebalance date: {date} | sleeves_on={on} | gross_sleeves={gross} | cash={cash}"
     )
-    print("symbol   action   target_qty   diff   price    alloc_w")
-    for o in result.get("orders", []):
+
+    orders = result.get("orders", [])
+    if not orders:
+        print("(No orders)")
+        return
+
+    print("symbol   action   target_qty   diff     price     alloc_w")
+    for o in orders:
         print(
-            f"{o['symbol']:6}  {o['action']:6}  {o['target_qty']:11d}  {o['diff']:5d}  "
-            f"{o['price']:8.2f}  {o['alloc_w']:.4f}"
+            f"{o['symbol']:6}  {o['action']:6}  {o['target_qty']:11d}  {o['diff']:6d}  "
+            f"{o['price']:9.4f}  {o['alloc_w']:.4f}"
         )

@@ -1,1 +1,4 @@
-30 7 * * 1-5 root /app/run.sh >> /var/log/cron.log 2>&1
+#!/bin/bash
+echo "[$(date)] Running ETF Trend Algo..."
+cd /app/
+poetry run python algo.py

@@ -15,7 +15,7 @@ MA_FIXED = {"QQQ": 150, "BND": 150, "GLD": 150}
 
 load_dotenv(find_dotenv())
 
-
+FORCED_REBALANCE = str2bool(os.getenv("FORCED_REBALANCE", False))
 LIVE_TRADE = str2bool(os.getenv("LIVE_TRADE", False))
 log(f"Running in {'LIVE' if LIVE_TRADE else 'TEST'} mode", "info")
 
@@ -34,7 +34,7 @@ portfolio = run_single_iteration(
     SLEEVES,
     CASH,
     MA_FIXED,
-    force_rebalance=False,  # True to override month-end schedule
+    force_rebalance=FORCED_REBALANCE,  # True to override month-end schedule
     is_live_trade=LIVE_TRADE,  # True to actually submit orders
     equity_override=None,  # or a float to size via custom equity
 )
