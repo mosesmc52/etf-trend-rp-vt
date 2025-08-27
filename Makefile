@@ -28,5 +28,5 @@ down:
 	docker-compose -f $(COMPOSE_FILE) down
 
 clean:
-	docker-compose -f $(COMPOSE_FILE) rm -sfv pead-trend-algo
-	docker image rm pead-drift-algo_pead-trend-algo || true
+	docker-compose -f $(COMPOSE_FILE) rm -sfv etf-trend-rp-vt_algo
+	docker image rm etf-trend-rp-vt_algo || true
