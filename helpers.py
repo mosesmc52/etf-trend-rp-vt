@@ -19,7 +19,7 @@ EMA_ALPHA = 0.40  # None to disable
 VT_TARGET = 0.10  # None to disable
 VT_LKBK = 60
 GROSS_CAP = 1.25
-REB = "W"  # "M" = week-end rebalance
+REB = "M"  # "M" = week-end rebalance
 
 
 # Live-trading knobs
