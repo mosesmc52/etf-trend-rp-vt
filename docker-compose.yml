@@ -2,13 +2,12 @@ version: '3.7'
 
 services:
   algo:
-    stdin_open: true
-    tty: true
     build: .
-    volumes:
-      - .:/app
+    restart: unless-stopped
     env_file:
       - ./.env
+    volumes:
+      - ./.env:/app/.env:ro
     dns:
       - 8.8.8.8
       - 1.1.1.1
