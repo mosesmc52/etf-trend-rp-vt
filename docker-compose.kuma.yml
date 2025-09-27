@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     env_file:
       - ./.env
+    environment:
+      - KUMA_HOST=uptime-kuma
     volumes:
       - ./.env:/app/.env:ro
     dns:
