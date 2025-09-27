@@ -101,8 +101,8 @@ trap on_exit EXIT INT TERM
 # ----------------------------
 # Run your job
 # ----------------------------
-#cd /app
-#poetry run python algo.py
+cd /app
+poetry run python algo.py
 
 # Success heartbeat
 kuma_send "up" "${KUMA_MSG_OK:-ok}" "$(to_ms)" "0"
