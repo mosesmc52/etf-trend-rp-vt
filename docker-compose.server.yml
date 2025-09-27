@@ -16,3 +16,4 @@ services:
 networks:
   monnet:
     external: true
+    name: monnet
