@@ -7,10 +7,10 @@ from log import log
 from SES import AmazonSES
 
 # ---------- Config (match your backtest) ----------
-SLEEVES = ["QQQ", "BND", "GLD"]
+SLEEVES = ["SCHD", "BND", "GLD"]
 CASH = "BIL"
 
-MA_FIXED = {"QQQ": 150, "BND": 150, "GLD": 150}
+MA_FIXED = {"SCHD": 150, "BND": 150, "GLD": 150}
 
 
 load_dotenv(find_dotenv())
