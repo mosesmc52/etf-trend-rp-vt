@@ -336,12 +336,65 @@ def _ma_signal(series: pd.Series, win: int) -> int:
     return int(series.iloc[-1] > series.rolling(win).mean().iloc[-1])
 
 
-def _invvol_weights(rets: pd.DataFrame) -> pd.Series:
-    vol = rets.std().replace(0, np.nan)
-    inv = (1.0 / vol).fillna(0.0)
-    if inv.sum() == 0:
+def _invvol_weights(
+    rets: pd.DataFrame,
+    *,
+    gamma: float = 0.6,  # <1 dampens sensitivity (recommended 0.4–0.7)
+    vol_floor: float = 0.06,  # annualized floor; prevents bonds dominating
+    max_w: float | None = 0.60,  # optional cap per sleeve (set None to disable)
+    periods_per_year: int = 252,
+) -> pd.Series:
+    """
+    Improved inverse-vol weights with:
+      - vol floor (annualized)
+      - power-law inverse vol (gamma)
+      - optional max weight cap with renormalization
+    Expects daily returns in `rets`.
+    """
+    if rets is None or rets.empty:
+        raise ValueError("rets is empty")
+
+    # Daily vol -> annualized vol (consistent with vol_floor)
+    vol_d = rets.std().replace(0, np.nan)
+    vol_ann = (vol_d * np.sqrt(periods_per_year)).fillna(np.nan)
+
+    # Floor + sanitize
+    vol_ann = vol_ann.clip(lower=vol_floor)
+    vol_ann = vol_ann.replace([np.inf, -np.inf], np.nan)
+
+    # Power-law inverse vol
+    inv = 1.0 / (vol_ann ** float(gamma))
+    inv = inv.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # Fallback if all zeros
+    if inv.sum() <= 0:
         return pd.Series(1.0 / len(rets.columns), index=rets.columns)
-    return inv / inv.sum()
+
+    w = inv / inv.sum()
+
+    # Optional max cap (iterative renormalization for stability)
+    if max_w is not None:
+        max_w = float(max_w)
+        w = w.clip(lower=0.0)
+        for _ in range(10):
+            over = w > max_w
+            if not over.any():
+                break
+            excess = (w[over] - max_w).sum()
+            w[over] = max_w
+            under = ~over
+            if under.any() and w[under].sum() > 0 and excess > 0:
+                w[under] += excess * (w[under] / w[under].sum())
+            else:
+                break
+
+        # Final normalize
+        if w.sum() > 0:
+            w = w / w.sum()
+        else:
+            w = pd.Series(1.0 / len(rets.columns), index=rets.columns)
+
+    return w
 
 
 def _ema_blend(
@@ -417,7 +470,12 @@ def compute_today_target_weights(
     if len(on_list) == 0:
         w[cash] = 1.0
     else:
-        w_rp = _invvol_weights(rets[on_list].tail(VOL_LKBK))
+        w_rp = _invvol_weights(
+            rets[on_list].tail(VOL_LKBK),
+            gamma=0.6,
+            vol_floor=0.06,
+            max_w=0.60,
+        )
         w.loc[on_list] = w_rp.values
 
     # EMA smoothing on sleeves
