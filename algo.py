@@ -7,10 +7,17 @@ from log import log
 from SES import AmazonSES
 
 # ---------- Config (match your backtest) ----------
-SLEEVES = ["SPY", "BND", "GLD"]
+EQUITY_CANDS = ["SPY", "QQQ", "IEF"]
+OTHER_SLEEVES = ["BND", "GLD"]
 CASH = "BIL"
 
-MA_FIXED = {"SPY": 150, "BND": 150, "GLD": 150}
+MA_FIXED = {
+    "SPY": 200,
+    "QQQ": 180,
+    "IEF": 120,
+    "BND": 120,
+    "GLD": 150,
+}
 
 
 load_dotenv(find_dotenv())
@@ -31,7 +38,8 @@ portfolio_value = round(float(account.equity), 3)
 
 portfolio = run_single_iteration(
     api,
-    SLEEVES,
+    EQUITY_CANDS,
+    OTHER_SLEEVES,
     CASH,
     MA_FIXED,
     force_rebalance=FORCED_REBALANCE,  # True to override month-end schedule

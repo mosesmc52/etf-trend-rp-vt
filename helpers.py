@@ -3,7 +3,7 @@ import json
 import math
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import alpaca_trade_api as tradeapi
 import numpy as np
@@ -15,11 +15,15 @@ from log import log
 # ---------- Config (match your backtest) ----------
 
 VOL_LKBK = 60
-EMA_ALPHA = 0.40  # None to disable
+EMA_ALPHA = 0.30  # None to disable
 VT_TARGET = 0.10  # None to disable
 VT_LKBK = 60
 GROSS_CAP = 1.25
 REB = "M"  # "M" = week-end rebalance
+
+MOM_LKBK = 252
+MOM_SKIP = 21
+REQ_POS_MOM = True  # require best equity momentum > 0
 
 
 # Live-trading knobs
@@ -100,6 +104,21 @@ def process_position(api, security, qty, is_live_trade=False):
 
 
 # ---------- Small utils ----------
+def _momentum_score(
+    series: pd.Series, asof: pd.Timestamp, lookback: int, skip: int
+) -> float:
+    """
+    Dual momentum score:
+      score = price(asof - skip) / price(asof - lookback - skip) - 1
+    """
+    s = series.loc[:asof].dropna()
+    if len(s) < (lookback + skip + 5):
+        return np.nan
+    end = s.iloc[-1 - skip] if skip > 0 else s.iloc[-1]
+    start = s.iloc[-1 - skip - lookback]
+    if start <= 0 or end <= 0:
+        return np.nan
+    return float(end / start - 1.0)
 
 
 def price_history(
@@ -398,17 +417,58 @@ def _invvol_weights(
 
 
 def _ema_blend(
-    current: pd.Series, prev: Dict[str, float] | None, alpha: float, sleeves: List[str]
+    current: pd.Series,
+    prev: Dict[str, float] | None,
+    alpha: float,
+    risky_sleeves: List[str],
+    allowed_risky: List[str],
+    cash: str,
 ) -> pd.Series:
+    """
+    EMA smoothing that prevents "smear" into OFF assets:
+
+    - Smoothes only within the risky block.
+    - Forces risky weights outside allowed_risky to 0 (post-blend).
+    - Renormalizes allowed_risky to sum to 1 if any are non-zero;
+      otherwise goes 100% cash.
+
+    This keeps your live logic aligned to the notebook behavior.
+    """
     if prev is None or not (0 < alpha < 1):
-        return current
-    out = current.copy()
-    for t in current.index:
-        p = float(prev.get(t, 0.0))
-        out[t] = (1 - alpha) * p + alpha * float(current[t])
-    ssum = out[sleeves].sum()
+        out = current.copy()
+    else:
+        out = current.copy()
+        for t in risky_sleeves + [cash]:
+            p = float(prev.get(t, 0.0))
+            out[t] = (1 - alpha) * p + alpha * float(current.get(t, 0.0))
+
+    # Force OFF risky sleeves to 0
+    allowed_set = set(allowed_risky)
+    for t in risky_sleeves:
+        if t not in allowed_set:
+            out[t] = 0.0
+
+    # Renormalize within allowed risky; remainder -> cash
+    ssum = float(out[allowed_risky].sum()) if allowed_risky else 0.0
     if ssum > 0:
-        out[sleeves] = out[sleeves] / ssum
+        out[allowed_risky] = out[allowed_risky] / ssum
+        for t in risky_sleeves:
+            if t not in allowed_set:
+                out[t] = 0.0
+        out[cash] = 0.0
+    else:
+        for t in risky_sleeves:
+            out[t] = 0.0
+        out[cash] = 1.0
+
+    # Final sanitize
+    out[out.abs() < 1e-10] = 0.0
+    tot = float(out.sum())
+    if tot > 0:
+        out = out / tot
+    else:
+        out[:] = 0.0
+        out[cash] = 1.0
     return out
 
 
@@ -431,87 +491,161 @@ def _target_gross_from_cov(rets_window: pd.DataFrame, weights: pd.Series) -> flo
 # ==========================================
 # Compute today's target weights (single run)
 # ==========================================
-def compute_today_target_weights(
+def compute_today_target_weights_dual_mom_equity(
     api,
-    sleeves: List[str],
+    equity_cands: List[str],
+    other_sleeves: List[str],
     cash: str,
     ma_fixed: Dict[str, int],
     *,
     force_rebalance: bool = False,
-):
-    tickers = sleeves + [cash]
+    mom_lkbk: int = MOM_LKBK,
+    mom_skip: int = MOM_SKIP,
+    req_pos_mom: bool = REQ_POS_MOM,
+) -> Tuple[Optional[pd.Series], Dict, pd.DataFrame]:
+    """
+    Notebook-aligned live weights:
+      - Rebalance schedule (month-end unless forced)
+      - Signals computed as-of prior trading day (no lookahead)
+      - Dual Momentum on equities (select ONE equity candidate)
+      - MA gating for other sleeves
+      - inv-vol RP across active risky sleeves
+      - EMA smoothing restricted to allowed risky sleeves
+      - Vol targeting from trailing covariance
+    """
+    risky_sleeves = list(dict.fromkeys(equity_cands + other_sleeves))
+    tickers = risky_sleeves + [cash]
+
     px = _download_history_alpaca(api, tickers, ma_fixed)
     if px.empty:
         raise RuntimeError(
-            "Downloaded price frame is empty after aggregation. Check feed, symbols, date range."
+            "Downloaded price frame is empty after aggregation. Check feed/symbols/date range."
         )
     if not set(tickers).issubset(px.columns):
         missing = sorted(set(tickers) - set(px.columns))
         raise RuntimeError(f"Missing prices for: {missing}")
 
+    px = px.dropna(how="all")
     rets = px.pct_change().dropna()
     today = px.index[-1]
 
     # Respect month-end schedule unless forced
-
     if not force_rebalance and not _is_rebalance_day(px.index, today, REB):
         return None, {"reason": "not a rebalance day", "date": str(today.date())}, px
 
-    # MA signals + min history for vol
-    on_list = []
-    for t in sleeves:
-        sig = _ma_signal(px[t], ma_fixed.get(t, 150))
-        enough = len(rets[t]) >= VOL_LKBK + 5
-        if sig == 1 and enough:
-            on_list.append(t)
+    # No-lookahead: use prior trading day for MA/momentum/cov
+    if len(px.index) < 3:
+        return None, {"reason": "insufficient history", "date": str(today.date())}, px
+    asof = px.index[-2]
 
-    # Base weights: inverse-vol over "on" sleeves, else all cash
+    # MA gate for a ticker using data up to asof
+    def is_on(t: str) -> bool:
+        win = ma_fixed.get(t, 150)
+        return int(_ma_signal(px[t].loc[:asof], win)) == 1
+
+    # --- 1) Dual Momentum equity selection (ONE equity candidate, among MA-on) ---
+    eq_on = [t for t in equity_cands if (t in px.columns) and is_on(t)]
+    eq_scores: Dict[str, float] = {}
+    eq_pick: Optional[str] = None
+
+    for t in eq_on:
+        sc = _momentum_score(px[t], asof=asof, lookback=mom_lkbk, skip=mom_skip)
+        if np.isfinite(sc):
+            eq_scores[t] = float(sc)
+
+    if eq_scores:
+        eq_pick = max(eq_scores, key=eq_scores.get)
+        if req_pos_mom and eq_scores.get(eq_pick, -np.inf) <= 0:
+            eq_pick = None
+
+    # --- 2) Other sleeves MA-on + enough history for VOL_LKBK ---
+    other_on = [
+        t
+        for t in other_sleeves
+        if (t in px.columns) and is_on(t) and (len(rets[t].loc[:asof]) >= VOL_LKBK + 5)
+    ]
+
+    allowed_risky = ([eq_pick] if eq_pick is not None else []) + other_on
+
+    # --- 3) Base weights: inv-vol across allowed risky, else 100% cash ---
     w = pd.Series(0.0, index=tickers)
-    if len(on_list) == 0:
+
+    if not allowed_risky:
         w[cash] = 1.0
     else:
+        sub = rets[allowed_risky].loc[:asof].tail(VOL_LKBK)
         w_rp = _invvol_weights(
-            rets[on_list].tail(VOL_LKBK),
+            sub,
             gamma=0.6,
             vol_floor=0.06,
             max_w=0.60,
-        )
-        w.loc[on_list] = w_rp.values
+            periods_per_year=252,
+        )  # returns pd.Series in your implementation
+        w.loc[w_rp.index] = w_rp.values
+        # Ensure only allowed risky have weight
+        for t in risky_sleeves:
+            if t not in set(allowed_risky):
+                w[t] = 0.0
+        w[cash] = 0.0
 
-    # EMA smoothing on sleeves
+    # --- 4) EMA smoothing restricted to allowed risky sleeves ---
     state = _load_state()
     ema_prev = state.get("ema_prev", {})
-    if EMA_ALPHA is not None:
-        w = _ema_blend(w, ema_prev, EMA_ALPHA, sleeves)
 
-    # Normalize sleeves block; leftover goes to cash
-    sleeves_sum = float(w[sleeves].sum())
-    if sleeves_sum > 0:
-        w[sleeves] = w[sleeves] / sleeves_sum
+    if EMA_ALPHA is not None:
+        w = _ema_blend(
+            current=w,
+            prev=ema_prev,
+            alpha=float(EMA_ALPHA),
+            risky_sleeves=risky_sleeves,
+            allowed_risky=allowed_risky,
+            cash=cash,
+        )
+
+    # --- 5) Ensure risky block normalized; leftover to cash (same convention as notebook) ---
+    risky_sum = float(w[risky_sleeves].sum())
+    if risky_sum > 0:
+        w[risky_sleeves] = w[risky_sleeves] / risky_sum
         w[cash] = 0.0
     else:
+        w[risky_sleeves] = 0.0
         w[cash] = 1.0
 
-    # Vol targeting → scale sleeves gross
-    if sleeves_sum > 0 and VT_TARGET is not None:
-        gross = _target_gross_from_cov(rets[sleeves].tail(VT_LKBK), w[sleeves])
-        w[sleeves] = w[sleeves] * gross
-        w[cash] = 1.0 - float(w[sleeves].sum())
+    # --- 6) Vol targeting from trailing covariance up to asof ---
+    if float(w[risky_sleeves].sum()) > 0 and VT_TARGET is not None:
+        cov_win = rets[risky_sleeves].loc[:asof].tail(VT_LKBK)
+        gross = _target_gross_from_cov(
+            cov_win, w[risky_sleeves]
+        )  # uses your VT_TARGET/GROSS_CAP/ALLOW_MARGIN
+        w[risky_sleeves] = w[risky_sleeves] * gross
+        w[cash] = 1.0 - float(w[risky_sleeves].sum())
 
-    # Clean tiny dust / exact renorm
+    # Clean dust / renormalize
     w[w.abs() < 1e-8] = 0.0
-    w = w / w.sum()
+    tot = float(w.sum())
+    if tot <= 0:
+        w[:] = 0.0
+        w[cash] = 1.0
+    else:
+        w = w / tot
 
     meta = {
         "date": str(today.date()),
-        "on_sleeves": on_list,
-        "gross_sleeves": float(w[sleeves].sum()),
-        "cash_weight": float(w[cash]),
+        "asof": str(asof.date()),
         "rebalance": True,
+        "equity_candidates_on": eq_on,
+        "equity_pick": eq_pick,
+        "equity_scores": eq_scores,
+        "on_sleeves": allowed_risky,
+        "gross_risky": float(w[risky_sleeves].sum()),
+        "cash_weight": float(w[cash]),
     }
 
-    # Persist EMA state
-    _save_state(ema_prev={k: float(w[k]) for k in sleeves}, last_reb_date=today.date())
+    # Persist EMA state for risky sleeves only
+    _save_state(
+        ema_prev={k: float(w.get(k, 0.0)) for k in risky_sleeves},
+        last_reb_date=today.date(),
+    )
     return w, meta, px
 
 
@@ -577,7 +711,8 @@ def place_orders_for_weights(
 # ==========================================
 def run_single_iteration(
     api,
-    sleeves: List[str],
+    equity_cands: List[str],
+    other_sleeves: List[str],
     cash: str,
     ma_fixed: Dict[str, int],
     *,
@@ -587,13 +722,18 @@ def run_single_iteration(
 ):
     """
     - Computes today's target weights (or exits with 'not a rebalance day').
-    - Generates buy/sell/hold instructions for the provided sleeves + cash.
-    - If is_live_trade=True, submits market orders via process_position().
+    - Dual Momentum selects ONE equity among equity_cands (if eligible).
+    - Other sleeves are included if MA-on.
+    - If is_live_trade=True, submits orders.
     """
-    res = compute_today_target_weights(
-        api, sleeves, cash, ma_fixed, force_rebalance=force_rebalance
+    w, meta, px = compute_today_target_weights_dual_mom_equity(
+        api,
+        equity_cands=equity_cands,
+        other_sleeves=other_sleeves,
+        cash=cash,
+        ma_fixed=ma_fixed,
+        force_rebalance=force_rebalance,
     )
-    w, meta, px = res
     if w is None:
         return {"meta": meta, "orders": []}
 
