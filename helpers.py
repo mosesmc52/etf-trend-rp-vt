@@ -10,18 +10,17 @@ import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
 from alpaca_trade_api.rest import APIError, TimeFrame
-from log import log
 
 # ---------- Config (match your backtest) ----------
 
 VOL_LKBK = 60
 EMA_ALPHA = 0.30  # None to disable
-VT_TARGET = 0.10  # None to disable
-VT_LKBK = 60
+VT_TARGET = 0.12  # None to disable
+VT_LKBK = 40
 GROSS_CAP = 1.25
-REB = "M"  # "M" = week-end rebalance
+REB = "W"  # "M" = week-end rebalance
 
-MOM_LKBK = 252
+MOM_LKBK = 84
 MOM_SKIP = 21
 REQ_POS_MOM = True  # require best equity momentum > 0
 
