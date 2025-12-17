@@ -17,7 +17,7 @@ VOL_LKBK = 60
 EMA_ALPHA = 0.30  # None to disable
 VT_TARGET = 0.12  # None to disable
 VT_LKBK = 40
-GROSS_CAP = 1.25
+GROSS_CAP = 1.5
 REB = "W"  # "M" = week-end rebalance
 
 MOM_LKBK = 84

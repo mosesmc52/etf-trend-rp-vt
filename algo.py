@@ -7,16 +7,13 @@ from log import log
 from SES import AmazonSES
 
 # ---------- Config (match your backtest) ----------
-EQUITY_CANDS = ["ITOT", "QQQ", "EFA"]
+EQUITY_CANDS = ["QQQ"]
 
 OTHER_SLEEVES = ["HYMB", "IAU"]
 CASH = "BIL"
 
 MA_FIXED = {
-    "ITOT": 210,
-    "IVW": 200,
     "QQQ": 150,
-    "EFA": 120,
     "HYMB": 50,
     "IAU": 125,
 }
