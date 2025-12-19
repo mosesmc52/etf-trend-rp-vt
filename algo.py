@@ -53,9 +53,19 @@ EMAIL_POSITIONS = str2bool(os.getenv("EMAIL_POSITIONS", False))
 message_body_html = f"Portfolio Value: {portfolio_value}<br>"
 message_body_plain = f"Portfolio Value: {portfolio_value}\n"
 for position in portfolio["orders"]:
+    reason = position.get("reason", "")
+    suffix = f" [{reason}]" if reason else ""
 
-    message_body_html += f'<a clicktracking=off href="https://finviz.com/quote.ashx?t={position["symbol"]}">{position["symbol"]}</a>: {position["target_qty"]} ({position["action"]} {round(position["alloc_w"],3)})<br>'
-    message_body_plain += f'{position["symbol"]}: {position["target_qty"]} ({position["action"]} {round(position["alloc_w"], 3)})\n'
+    message_body_html += (
+        f'<a clicktracking=off href="https://finviz.com/quote.ashx?t={position["symbol"]}">'
+        f'{position["symbol"]}</a>: {position["target_qty"]} '
+        f'({position["action"]} {round(position["alloc_w"],3)}){suffix}<br>'
+    )
+
+    message_body_plain += (
+        f'{position["symbol"]}: {position["target_qty"]} '
+        f'({position["action"]} {round(position["alloc_w"], 3)}){suffix}\n'
+    )
 
 if EMAIL_POSITIONS:
     TO_ADDRESSES = os.getenv("TO_ADDRESSES", "").split(",")

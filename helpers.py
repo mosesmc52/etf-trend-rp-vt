@@ -55,6 +55,68 @@ def str2bool(value):
         raise ValueError('invalid literal for boolean: "%s"' % value)
 
 
+def _get_current_positions(api) -> Dict[str, int]:
+    """
+    Returns {symbol: signed_qty} for all open positions.
+    Alpaca qty is typically positive for long positions.
+    """
+    out = {}
+    try:
+        positions = api.list_positions()
+        for p in positions:
+            sym = getattr(p, "symbol", None)
+            qty = int(float(getattr(p, "qty", 0)))
+            if sym and qty != 0:
+                out[sym] = qty
+    except Exception as e:
+        print(f"[WARN] Unable to list positions: {e}")
+    return out
+
+
+def _liquidate_positions_not_in_universe(
+    api,
+    keep_symbols: set,
+    *,
+    is_live_trade: bool,
+    last_px: Dict[str, float] | None = None,
+) -> List[Dict]:
+    """
+    For any currently-held symbol not in keep_symbols, create an order to sell to 0.
+    Uses your process_position(api, security, qty, is_live_trade) to submit diffs.
+
+    Returns orders in the same schema as place_orders_for_weights().
+    """
+    last_px = last_px or {}
+    orders = []
+    pos = _get_current_positions(api)
+
+    for sym, current_qty in sorted(pos.items()):
+        if sym in keep_symbols:
+            continue
+
+        # Target is 0 (sell all)
+        action, qty, diff = process_position(api, sym, 0, is_live_trade=is_live_trade)
+
+        # process_position() will compute diff = 0 - current_qty (negative)
+        if diff == 0:
+            continue
+
+        px = float(last_px.get(sym, np.nan))
+        orders.append(
+            {
+                "symbol": sym,
+                "action": "sell",
+                "target_qty": 0,
+                "diff": int(diff),
+                "price": px if np.isfinite(px) else np.nan,
+                "alloc_w": 0.0,
+                "reason": "out_of_universe",
+            }
+        )
+
+    return orders
+
+
 def process_position(api, security, qty, is_live_trade=False):
     is_existing_position = False
     try:
@@ -667,6 +729,7 @@ def place_orders_for_weights(
     """
     Uses your provided `process_position(api, security, qty, is_live_trade)` to submit diffs.
     Returns a list of {symbol, action, target_qty, diff, price, alloc_w}.
+    Filters out pure holds (diff==0) to keep the output clean.
     """
     if equity is None:
         try:
@@ -678,19 +741,25 @@ def place_orders_for_weights(
     results = []
     for sym in target_w.index:
         w = float(target_w.get(sym, 0.0))
+
+        # If target weight is exactly 0, we still want to SELL to zero if currently held.
         px = float(last_px.get(sym, np.nan))
         if not np.isfinite(px) or px <= 0:
-            continue
+            # Still attempt liquidation if weight=0; process_position doesn't require px
+            target_qty = 0
+        else:
+            target_dollars = equity * w
+            target_qty = _round_shares(target_dollars / px, lot=ROUND_LOT)
 
-        target_dollars = equity * w
-        target_qty = _round_shares(target_dollars / px, lot=ROUND_LOT)
-
-        # Your function should be imported / defined elsewhere
         action, qty, diff = process_position(
-            api, sym, target_qty, is_live_trade=is_live_trade
+            api, sym, int(target_qty), is_live_trade=is_live_trade
         )
 
-        action_readable = "hold" if diff == 0 else ("buy" if diff > 0 else "sell")
+        # Filter out holds (no change)
+        if int(diff) == 0:
+            continue
+
+        action_readable = "buy" if diff > 0 else "sell"
         results.append(
             {
                 "symbol": sym,
@@ -718,12 +787,13 @@ def run_single_iteration(
     force_rebalance: bool = False,
     is_live_trade: bool = False,
     equity_override: float | None = None,
+    liquidate_out_of_universe: bool = True,
 ):
     """
     - Computes today's target weights (or exits with 'not a rebalance day').
-    - Dual Momentum selects ONE equity among equity_cands (if eligible).
-    - Other sleeves are included if MA-on.
-    - If is_live_trade=True, submits orders.
+    - Submits orders to reach those weights.
+    - OPTIONAL: sells to zero any *currently held* symbols that are not in the
+      current universe (equity_cands + other_sleeves + cash).
     """
     w, meta, px = compute_today_target_weights_dual_mom_equity(
         api,
@@ -733,10 +803,16 @@ def run_single_iteration(
         ma_fixed=ma_fixed,
         force_rebalance=force_rebalance,
     )
+
+    # If not a rebalance day, do nothing (including no forced clean-up)
     if w is None:
         return {"meta": meta, "orders": []}
 
+    universe = set(list(equity_cands) + list(other_sleeves) + [cash])
+
+    # Prices for current universe (used for sizing + reporting)
     last_px = _get_last_prices_from_history(px[w.index])
+
     orders = place_orders_for_weights(
         api,
         w,
@@ -744,6 +820,18 @@ def run_single_iteration(
         last_px=last_px,
         is_live_trade=is_live_trade,
     )
+
+    # Liquidate anything held that is no longer in the universe
+    if liquidate_out_of_universe:
+        # Note: last_px may not include out-of-universe symbols; that's fine.
+        exit_orders = _liquidate_positions_not_in_universe(
+            api,
+            keep_symbols=universe,
+            is_live_trade=is_live_trade,
+            last_px=last_px,
+        )
+        orders.extend(exit_orders)
+
     return {"meta": meta, "weights": w.to_dict(), "orders": orders}
 
 
