@@ -9,13 +9,13 @@ from SES import AmazonSES
 # ---------- Config (match your backtest) ----------
 EQUITY_CANDS = ["QLD", "QQQ"]
 
-OTHER_SLEEVES = ["SMH", "HYMB", "IAU"]
+OTHER_SLEEVES = ["SMH", "HYMB", "GLDM"]
 CASH = "BIL"
 
 MA_FIXED = {
     "SMH": 200,
     "HYMB": 50,
-    "IAU": 125,
+    "GLDM": 110,
 }
 
 
