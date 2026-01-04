@@ -2,7 +2,7 @@ import os
 
 import alpaca_trade_api as tradeapi
 from dotenv import find_dotenv, load_dotenv
-from helpers import print_orders_table, run_single_iteration, str2bool
+from helpers import getenv_float, print_orders_table, run_single_iteration, str2bool
 from log import log
 from SES import AmazonSES
 
@@ -18,6 +18,12 @@ MA_FIXED = {
     "GLDM": 110,
 }
 
+INVERSE_SET = {"PSQ"}
+MA_FIXED_INVERSE = {"PSQ": 230}
+
+EQUITY_FRACTION = getenv_float("EQUITY_FRACTION", 1)
+
+LIQUIDATION_SYMBOLS_TO_IGNORE = None
 
 load_dotenv(find_dotenv())
 
@@ -37,13 +43,16 @@ portfolio_value = round(float(account.equity), 3)
 
 portfolio = run_single_iteration(
     api,
-    EQUITY_CANDS,
-    OTHER_SLEEVES,
-    CASH,
-    MA_FIXED,
+    equity_cands=EQUITY_CANDS,
+    other_sleeves=OTHER_SLEEVES,
+    cash=CASH,
+    ma_fixed=MA_FIXED,
+    inverse_set=INVERSE_SET,
+    ma_fixed_inverse=MA_FIXED_INVERSE,
+    equity_fraction=EQUITY_FRACTION,
     force_rebalance=FORCED_REBALANCE,  # True to override month-end schedule
     is_live_trade=LIVE_TRADE,  # True to actually submit orders
-    equity_override=None,  # or a float to size via custom equity
+    ignore_liquidation_symbols=LIQUIDATION_SYMBOLS_TO_IGNORE,
 )
 print_orders_table(portfolio)
 
