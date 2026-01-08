@@ -256,6 +256,10 @@ jobs:
         run: |
             set -euo pipefail
 
+            # Runner-side log file (prevents 'LOG: unbound variable' if you add tee later)
+            LOG="/home/runner/job-wait.log"
+            touch "$LOG"
+
             # --- Write SSH key ---
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
@@ -277,68 +281,46 @@ jobs:
             done
 
             if [ -z "${SSH_USER}" ]; then
-              echo "SSH login failed for ubuntu and root."
-              echo "Likely causes: wrong SSH key injected into droplet, firewall blocks port 22, or droplet not ready."
+              echo "SSH login failed for ubuntu and root." | tee -a "$LOG"
               exit 1
             fi
 
-            echo "Using SSH user: ${SSH_USER}"
+            echo "Using SSH user: ${SSH_USER}" | tee -a "$LOG"
 
             # --- Wait for the job to finish, while streaming logs ---
-            MAX_LOOPS=120          # 120 * 15s = 30 minutes
+            MAX_LOOPS=120
             SLEEP_SECS=15
             TAIL_LINES=30
 
-            echo "Waiting for /opt/job/exit_code to appear (showing last ${TAIL_LINES} lines of /var/log/job.log every ${SLEEP_SECS}s)..."
+            echo "Waiting for /opt/job/exit_code (tailing /var/log/job.log every ${SLEEP_SECS}s)..." | tee -a "$LOG"
 
             for i in $(seq 1 ${MAX_LOOPS}); do
-              # If the job has finished, stop waiting
               if ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'test -f /opt/job/exit_code'; then
-                echo "Job finished signal found: /opt/job/exit_code"
+                echo "Job finished signal found: /opt/job/exit_code" | tee -a "$LOG"
                 break
               fi
 
-              echo
-              echo "------------------------------------------------------------"
-              echo "Loop ${i}/${MAX_LOOPS} — job still running. Log tail:"
-              echo "------------------------------------------------------------"
-
-              # Show current log tail to GitHub Actions console
+              echo "----- Loop ${i}/${MAX_LOOPS}: job still running. Log tail: -----" | tee -a "$LOG"
               ssh ${SSH_OPTS} "${SSH_USER}@${IP}" "tail -n ${TAIL_LINES} /var/log/job.log 2>/dev/null || echo '(job.log not created yet)'" || true
 
               sleep ${SLEEP_SECS}
             done
 
-            # If exit_code still doesn't exist, fail with helpful diagnostics
             if ! ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'test -f /opt/job/exit_code'; then
-              echo
-              echo "Timed out waiting for /opt/job/exit_code."
-              echo "Diagnostics:"
-              echo "  - Droplet uptime / status:"
-              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'uptime || true' || true
-              echo "  - cloud-init status:"
-              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'command -v cloud-init >/dev/null && cloud-init status --long || echo "cloud-init not found"' || true
-              echo "  - docker status:"
-              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'systemctl is-active docker || true' || true
-              echo "  - docker ps:"
-              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'docker ps -a || true' || true
-              echo "  - job.log tail:"
-              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" "tail -n ${TAIL_LINES} /var/log/job.log || true" || true
+              echo "Timed out waiting for /opt/job/exit_code." | tee -a "$LOG"
+              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" "tail -n 200 /var/log/job.log || true" || true
               exit 1
             fi
 
-            echo
             echo "----- job.log (tail 200) -----"
             ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'tail -n 200 /var/log/job.log || true' || true
 
             EXIT=$(ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'cat /opt/job/exit_code || echo 999' || echo 999)
-            echo "Job exit code: ${EXIT}"
+            echo "Job exit code: ${EXIT}" | tee -a "$LOG"
 
             if [ "${EXIT}" != "0" ]; then
               exit 1
             fi
-
-
 
       - name: Destroy droplet (always)
         if: always()
