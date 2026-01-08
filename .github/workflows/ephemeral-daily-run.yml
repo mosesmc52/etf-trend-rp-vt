@@ -135,8 +135,8 @@ jobs:
                 docker pull ${JOB_IMAGE} >>"\$LOG" 2>&1
 
                 set +e
-                docker run --rm --env-file /opt/job/env ${JOB_IMAGE} /app/run.sh | tee -a "\$LOG"
-                EXIT_CODE=\$?
+                docker run --rm --env-file /opt/job/env ${JOB_IMAGE} /app/run.sh 2>&1 | tee -a "\$LOG"
+                EXIT_CODE=${PIPESTATUS[0]}
                 set -e
 
                 echo "\$EXIT_CODE" > /opt/job/exit_code
@@ -308,12 +308,12 @@ jobs:
 
             if ! ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'test -f /opt/job/exit_code'; then
               echo "Timed out waiting for /opt/job/exit_code." | tee -a "$LOG"
-              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" "tail -n 200 /var/log/job.log || true" || true
+              ssh ${SSH_OPTS} "${SSH_USER}@${IP}" "tail -n 800 /var/log/job.log || true" || true
               exit 1
             fi
 
             echo "----- job.log (tail 200) -----"
-            ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'tail -n 200 /var/log/job.log || true' || true
+            ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'tail -n 800 /var/log/job.log || true' || true
 
             EXIT=$(ssh ${SSH_OPTS} "${SSH_USER}@${IP}" 'cat /opt/job/exit_code || echo 999' || echo 999)
             echo "Job exit code: ${EXIT}" | tee -a "$LOG"
