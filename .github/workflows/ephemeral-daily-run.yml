@@ -123,7 +123,7 @@ jobs:
                 docker pull ${JOB_IMAGE} >>"\$LOG" 2>&1
 
                 set +e
-                docker run --rm --env-file /opt/job/env ${JOB_IMAGE} >>"\$LOG" 2>&1
+                docker run --rm --env-file /opt/job/env ${JOB_IMAGE} /app/run.sh >>"\$LOG" 2>&1
                 EXIT_CODE=\$?
                 set -e
 
