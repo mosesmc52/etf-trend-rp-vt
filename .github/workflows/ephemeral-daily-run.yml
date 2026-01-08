@@ -42,8 +42,8 @@ jobs:
           DO_SSH_KEY_FINGERPRINT: ${{ secrets.DO_SSH_KEY_FINGERPRINT }}
 
           # Only required if your GHCR image is private
-          # GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          # GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
 
           # Your job secrets/vars (example set; adjust to your app)
           ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
@@ -105,11 +105,11 @@ jobs:
                 systemctl enable --now docker >>"\$LOG" 2>&1
 
                 # If GHCR creds are provided, login (needed for private images).
-                # if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-                #   echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin >>"\$LOG" 2>&1
-                # else
-                #   echo "GHCR creds not provided; assuming image is public." | tee -a "\$LOG"
-                # fi
+                if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+                  echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin >>"\$LOG" 2>&1
+                else
+                  echo "GHCR creds not provided; assuming image is public." | tee -a "\$LOG"
+                fi
 
                 # Pull and run
                 docker pull ${JOB_IMAGE} >>"\$LOG" 2>&1
