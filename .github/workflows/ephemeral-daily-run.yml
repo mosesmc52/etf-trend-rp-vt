@@ -85,6 +85,12 @@ jobs:
             - curl
 
           write_files:
+            - path: /opt/job/ghcr.env
+              permissions: "0600"
+              content: |
+                GHCR_USERNAME=${GHCR_USERNAME}
+                GHCR_TOKEN=${GHCR_TOKEN}
+
             - path: /opt/job/env
               permissions: "0600"
               content: |
@@ -112,6 +118,12 @@ jobs:
                 curl -fsSL https://get.docker.com | sh >>"\$LOG" 2>&1
                 systemctl enable --now docker >>"\$LOG" 2>&1
 
+                if [ -f /opt/job/ghcr.env ]; then
+                  set -a
+                  . /opt/job/ghcr.env
+                  set +a
+                fi
+
                 # If GHCR creds are provided, login (needed for private images).
                 if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
                   echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin >>"\$LOG" 2>&1
@@ -130,8 +142,6 @@ jobs:
                 echo "\$EXIT_CODE" > /opt/job/exit_code
                 echo "=== Job end: \$(date -Is), exit=\$EXIT_CODE ===" | tee -a "\$LOG"
 
-                # Power off after completion
-                shutdown -h now
 
           runcmd:
             - [ bash, -lc, "/opt/job/run.sh" ]
