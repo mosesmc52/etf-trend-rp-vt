@@ -1,9 +1,10 @@
-version: '3.7'
-
+version: "3.7"
 
 services:
   algo:
-    build: .
+    build:
+      context: .
+    image: ghcr.io/mosesmc52/etf-trend-rp-vt:${TAG:-latest}
     restart: unless-stopped
     env_file:
       - ./.env
