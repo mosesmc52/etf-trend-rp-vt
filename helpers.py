@@ -32,7 +32,7 @@ ALLOW_MARGIN = False  # if True, allows gross > 1 up to GROSS_CAP
 
 # Alpaca side constants used by your process_position()
 BUY, SELL = "buy", "sell"
-DEFAULT_MA_INVERSE = 200
+
 DEFAULT_MA = 200
 
 
@@ -141,14 +141,7 @@ def _liquidate_positions_not_in_universe(
     return orders
 
 
-def _get_ma_window(
-    ticker: str,
-    ma_fixed: Dict[str, int],
-    inverse_set: set[str],
-    ma_fixed_inverse: Dict[str, int],
-) -> int:
-    if ticker in inverse_set:
-        return int(ma_fixed_inverse.get(ticker, DEFAULT_MA_INVERSE))
+def _get_ma_window(ticker: str, ma_fixed: Dict[str, int]) -> int:
     return int(ma_fixed.get(ticker, DEFAULT_MA))
 
 
@@ -636,15 +629,13 @@ def compute_today_target_weights_dual_mom_equity(
     cash: str,
     ma_fixed: Dict[str, int],
     *,
-    inverse_set: set[str] | None = None,
-    ma_fixed_inverse: Dict[str, int] | None = None,
     force_rebalance: bool = False,
     mom_lkbk: int = MOM_LKBK,
     mom_skip: int = MOM_SKIP,
     req_pos_mom: bool = REQ_POS_MOM,
 ):
     """
-    Notebook-aligned live weights:
+    Notebook-aligned live weights (no inverse sleeve):
       - Rebalance schedule (month-end/week-end unless forced)
       - Signals computed as-of prior trading day (no lookahead)
       - Dual Momentum on equities (select ONE equity candidate)
@@ -652,23 +643,15 @@ def compute_today_target_weights_dual_mom_equity(
       - inv-vol RP across active risky sleeves
       - EMA smoothing restricted to allowed risky sleeves
       - Vol targeting from trailing covariance
-      - Defensive fallback: pick inverse (MA+pos mom) else cash
+      - Defensive fallback: CASH only
     """
-    inverse_set = set(inverse_set or [])
-    ma_fixed_inverse = dict(ma_fixed_inverse or {})
 
     # --- Universe ---
     risky_sleeves = list(dict.fromkeys(equity_cands + other_sleeves))
-    inverse_list = sorted(inverse_set)  # FIX: use passed inverse_set (not global)
-    tickers = list(dict.fromkeys(risky_sleeves + inverse_list + [cash]))
+    tickers = list(dict.fromkeys(risky_sleeves + [cash]))
 
-    # --- Download history (ensure MA windows include inverse tickers) ---
-    # FIX: _download_history_alpaca() expects ma_fixed windows; provide merged mapping
-    ma_windows_all = dict(ma_fixed)
-    for t in inverse_list:
-        ma_windows_all[t] = int(ma_fixed_inverse.get(t, DEFAULT_MA_INVERSE))
-
-    px = _download_history_alpaca(api, tickers, ma_windows_all)
+    # --- Download history ---
+    px = _download_history_alpaca(api, tickers, ma_fixed)
     if px.empty:
         raise RuntimeError(
             "Downloaded price frame is empty after aggregation. Check feed/symbols/date range."
@@ -692,13 +675,7 @@ def compute_today_target_weights_dual_mom_equity(
 
     # MA gate for a ticker using data up to asof
     def is_on(t: str) -> bool:
-        # FIX: pass inverse params through MA window helper
-        win = _get_ma_window(
-            ticker=t,
-            ma_fixed=ma_fixed,
-            inverse_set=inverse_set,
-            ma_fixed_inverse=ma_fixed_inverse,
-        )
+        win = _get_ma_window(ticker=t, ma_fixed=ma_fixed)
         return int(_ma_signal(px[t].loc[:asof], win)) == 1
 
     # --- 1) Dual Momentum equity selection (ONE equity candidate, among MA-on) ---
@@ -725,23 +702,11 @@ def compute_today_target_weights_dual_mom_equity(
 
     allowed_risky = ([eq_pick] if eq_pick is not None else []) + other_on
 
-    # --- 3) Base weights: inv-vol across allowed risky; else inverse-or-cash ---
+    # --- 3) Base weights: inv-vol across allowed risky; else CASH ---
     w = pd.Series(0.0, index=tickers)
 
-    defensive_pick = None
     if not allowed_risky:
-        # FIX: pass inverse_set/ma_fixed_inverse into picker so it doesn't rely on globals
-        defensive_pick = _pick_inverse_or_cash(
-            px,
-            asof=asof,
-            cash=cash,
-            inverse_set=inverse_set,
-            ma_fixed=ma_fixed,
-            ma_fixed_inverse=ma_fixed_inverse,
-            mom_lkbk=mom_lkbk,
-            mom_skip=mom_skip,
-        )
-        w[defensive_pick] = 1.0
+        w[cash] = 1.0
     else:
         sub = rets[allowed_risky].loc[:asof].tail(VOL_LKBK)
         w_rp = _invvol_weights(
@@ -753,14 +718,11 @@ def compute_today_target_weights_dual_mom_equity(
         )
         w.loc[w_rp.index] = w_rp.values
 
-        # Ensure only allowed risky have weight
+        # Ensure only allowed risky have weight; cash off in risk mode
         allowed_set = set(allowed_risky)
         for t in risky_sleeves:
             if t not in allowed_set:
                 w[t] = 0.0
-        # Defensive instruments should be 0 when risky is on
-        for t in inverse_list:
-            w[t] = 0.0
         w[cash] = 0.0
 
     # --- 4) EMA smoothing restricted to allowed risky sleeves ---
@@ -776,28 +738,21 @@ def compute_today_target_weights_dual_mom_equity(
             allowed_risky=allowed_risky,
             cash=cash,
         )
-        # FIX: if we are in defensive mode, force defensive pick back to 1.0
-        # because _ema_blend() is designed for risky/cash only and can overwrite the inverse selection.
+
+        # If defensive (no risky), force cash=1
         if not allowed_risky:
             w[:] = 0.0
-            w[defensive_pick or cash] = 1.0
+            w[cash] = 1.0
 
-    # --- 5) Normalize risky block; if none, keep defensive allocation ---
+    # --- 5) Normalize risky block; if none, keep cash ---
     risky_sum = float(w[risky_sleeves].sum())
     if risky_sum > 0:
         w[risky_sleeves] = w[risky_sleeves] / risky_sum
-        # ensure defensive instruments off
-        for t in inverse_list:
-            w[t] = 0.0
         w[cash] = 0.0
     else:
-        # Defensive already set to 1.0; ensure no leakage
         for t in risky_sleeves:
             w[t] = 0.0
-        # If defensive_pick wasn't set for any reason, fall back to cash
-        if defensive_pick is None:
-            w[:] = 0.0
-            w[cash] = 1.0
+        w[cash] = 1.0
 
     # --- 6) Vol targeting (only for risky mode) ---
     if float(w[risky_sleeves].sum()) > 0 and VT_TARGET is not None:
@@ -805,9 +760,6 @@ def compute_today_target_weights_dual_mom_equity(
         gross = _target_gross_from_cov(cov_win, w[risky_sleeves])
         w[risky_sleeves] = w[risky_sleeves] * gross
         w[cash] = 1.0 - float(w[risky_sleeves].sum())
-        # defensive instruments off
-        for t in inverse_list:
-            w[t] = 0.0
 
     # Clean dust / renormalize
     w[w.abs() < 1e-8] = 0.0
@@ -826,12 +778,11 @@ def compute_today_target_weights_dual_mom_equity(
         "equity_pick": eq_pick,
         "equity_scores": eq_scores,
         "on_sleeves": allowed_risky,
-        "defensive_pick": defensive_pick,
         "gross_risky": float(w[risky_sleeves].sum()),
         "cash_weight": float(w.get(cash, 0.0)),
     }
 
-    # Persist EMA state for risky sleeves only (inverse is defensive-only)
+    # Persist EMA state for risky sleeves only
     _save_state(
         ema_prev={k: float(w.get(k, 0.0)) for k in risky_sleeves},
         last_reb_date=today.date(),
@@ -913,12 +864,10 @@ def run_single_iteration(
     cash: str,
     ma_fixed: Dict[str, int],
     *,
-    inverse_set: set[str] | None = None,
-    ma_fixed_inverse: Dict[str, int] | None = None,
     force_rebalance: bool = False,
     is_live_trade: bool = False,
     equity_override: float | None = None,
-    equity_fraction: float = 1.0,  # <--- NEW (0..1)
+    equity_fraction: float = 1.0,
     liquidate_out_of_universe: bool = True,
     ignore_liquidation_symbols: set[str] | None = None,
 ):
@@ -934,22 +883,16 @@ def run_single_iteration(
         other_sleeves=other_sleeves,
         cash=cash,
         ma_fixed=ma_fixed,
-        inverse_set=inverse_set,
-        ma_fixed_inverse=ma_fixed_inverse,
         force_rebalance=force_rebalance,
     )
 
-    # If not a rebalance day, do nothing (including no forced clean-up)
     if w is None:
         return {"meta": meta, "orders": []}
 
-    inv = set(inverse_set or [])
-    universe = set(equity_cands) | set(other_sleeves) | inv | {cash}
+    universe = set(equity_cands) | set(other_sleeves) | {cash}
 
-    # Prices for current universe (used for sizing + reporting)
     last_px = _get_last_prices_from_history(px[w.index])
 
-    # --- sizing base (optionally use a fraction of portfolio equity) ---
     if not (0.0 < float(equity_fraction) <= 1.0):
         raise ValueError(f"equity_fraction must be in (0, 1], got {equity_fraction}")
 
@@ -964,12 +907,11 @@ def run_single_iteration(
     orders = place_orders_for_weights(
         api,
         w,
-        equity=trade_equity,  # <--- use fraction-adjusted equity
+        equity=trade_equity,
         last_px=last_px,
         is_live_trade=is_live_trade,
     )
 
-    # Liquidate anything held that is no longer in the universe
     if liquidate_out_of_universe and float(equity_fraction) >= 0.999:
         exit_orders = _liquidate_positions_not_in_universe(
             api,
