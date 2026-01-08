@@ -35,6 +35,13 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      - name: Verify DO auth (safe)
+        env:
+          DO_TOKEN: ${{ secrets.DO_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -sS -H "Authorization: Bearer ${DO_TOKEN}" https://api.digitalocean.com/v2/account | jq .
+
       - name: Create droplet (cloud-init runs the job)
         id: create
         env:
