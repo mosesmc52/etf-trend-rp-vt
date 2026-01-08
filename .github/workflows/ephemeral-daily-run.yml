@@ -222,36 +222,81 @@ jobs:
           echo "Timed out waiting for droplet."
           exit 1
 
+      - name: Wait for SSH port 22
+        env:
+          IP: ${{ steps.ip.outputs.ip }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y netcat-openbsd
+          for i in {1..120}; do
+            if nc -z -w2 "${IP}" 22; then
+              echo "SSH port is open."
+              exit 0
+            fi
+            echo "Waiting for SSH port 22..."
+            sleep 5
+          done
+          echo "Timed out waiting for SSH port 22."
+          exit 1
+
       - name: Wait for job completion and show logs
         env:
           IP: ${{ steps.ip.outputs.ip }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          set -euo pipefail
+            set -euo pipefail
 
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+            # --- Write SSH key ---
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
 
-          # Wait for /opt/job/exit_code to appear
-          for i in {1..120}; do
-            if ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 root@${IP} 'test -f /opt/job/exit_code'; then
-              break
+            # Validate key format (fails fast if malformed)
+            ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+            # --- Wait for SSH port 22 to be open ---
+            for i in {1..120}; do
+              if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/id_ed25519 ubuntu@${IP} 'echo ok' >/dev/null 2>&1; then
+                SSH_USER="ubuntu"
+                break
+              fi
+              if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/id_ed25519 root@${IP} 'echo ok' >/dev/null 2>&1; then
+                SSH_USER="root"
+                break
+              fi
+              echo "Waiting for SSH to become available..."
+              sleep 5
+            done
+
+            if [ -z "${SSH_USER:-}" ]; then
+              echo "SSH not available with ubuntu or root. Possible causes: droplet powered off early, wrong SSH key injected, or firewall blocks port 22."
+              exit 1
             fi
-            echo "Waiting for job to finish..."
-            sleep 15
-          done
 
-          echo "----- job.log (tail 200) -----"
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 root@${IP} 'tail -n 200 /var/log/job.log || true'
+            echo "Using SSH user: ${SSH_USER}"
 
-          EXIT=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 root@${IP} 'cat /opt/job/exit_code || echo 999')
-          echo "Job exit code: ${EXIT}"
+            SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/id_ed25519"
 
-          if [ "${EXIT}" != "0" ]; then
-            exit 1
-          fi
+            # --- Wait for /opt/job/exit_code to appear ---
+            for i in {1..120}; do
+              if ssh ${SSH_OPTS} ${SSH_USER}@${IP} 'test -f /opt/job/exit_code'; then
+                break
+              fi
+              echo "Waiting for job to finish..."
+              sleep 15
+            done
+
+            echo "----- job.log (tail 200) -----"
+            ssh ${SSH_OPTS} ${SSH_USER}@${IP} 'tail -n 200 /var/log/job.log || true'
+
+            EXIT=$(ssh ${SSH_OPTS} ${SSH_USER}@${IP} 'cat /opt/job/exit_code || echo 999')
+            echo "Job exit code: ${EXIT}"
+
+            if [ "${EXIT}" != "0" ]; then
+              exit 1
+            fi
+
 
       - name: Destroy droplet (always)
         if: always()
