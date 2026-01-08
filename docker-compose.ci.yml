@@ -4,6 +4,7 @@ services:
   algo:
     build:
       context: .
+    image: ghcr.io/mosesmc52/etf-trend-rp-vt:${TAG:-latest}
     restart: unless-stopped
     env_file:
       - ./.env
