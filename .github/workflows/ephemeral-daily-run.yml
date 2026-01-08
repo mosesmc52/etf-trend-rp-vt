@@ -135,7 +135,7 @@ jobs:
                 docker pull ${JOB_IMAGE} >>"\$LOG" 2>&1
 
                 set +e
-                docker run --rm --env-file /opt/job/env ${JOB_IMAGE} /app/run.sh | tee -a "$LOG"
+                docker run --rm --env-file /opt/job/env ${JOB_IMAGE} /app/run.sh | tee -a "\$LOG"
                 EXIT_CODE=\$?
                 set -e
 
@@ -255,7 +255,7 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
             set -euo pipefail
-
+            LOG=""
             # Runner-side log file (prevents 'LOG: unbound variable' if you add tee later)
             LOG="/home/runner/job-wait.log"
             touch "$LOG"
