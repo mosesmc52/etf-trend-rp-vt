@@ -114,6 +114,9 @@ jobs:
                 LOG=/var/log/job.log
                 echo "=== Job start: \$(date -Is) ===" | tee -a "\$LOG"
 
+                echo "---- /opt/job/env (redacted) ----" | tee -a "\$LOG"
+                sed -E 's/(KEY|TOKEN|SECRET|PASSWORD)=.*/\1=REDACTED/g' /opt/job/env | tee -a "\$LOG"
+
                 # Install Docker
                 curl -fsSL https://get.docker.com | sh >>"\$LOG" 2>&1
                 systemctl enable --now docker >>"\$LOG" 2>&1
