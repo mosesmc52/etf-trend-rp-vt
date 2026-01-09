@@ -22,10 +22,6 @@ set +a
 : "${ALPACA_KEY_ID:?ALPACA_KEY_ID not set}"
 : "${ALPACA_SECRET_KEY:?ALPACA_SECRET_KEY not set}"
 
-echo "JOB_IMAGE=${JOB_IMAGE}" | tee -a "\$LOG"
-echo "Env file contents (redacted keys):" | tee -a "\$LOG"
-sed -E 's/(KEY|TOKEN|SECRET|PASSWORD)=.*/\1=REDACTED/g' /opt/job/env | tee -a "\$LOG"
-
 # Kuma config (same as yours)
 # --- Kuma config / URL building ---
 KUMA_URL="${KUMA_PUSH_URL:-}"
