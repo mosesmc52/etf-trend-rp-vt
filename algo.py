@@ -6,6 +6,8 @@ from helpers import getenv_float, print_orders_table, run_single_iteration, str2
 from log import log
 from SES import AmazonSES
 
+load_dotenv(find_dotenv())
+
 # ---------- Config (match your backtest) ----------
 EQUITY_CANDS = ["QLD", "QQQ"]
 OTHER_SLEEVES = ["SMH", "HYMB", "GLDM"]
@@ -30,7 +32,6 @@ EQUITY_FRACTION = getenv_float("EQUITY_FRACTION", 1)
 
 LIQUIDATION_SYMBOLS_TO_IGNORE = None
 
-load_dotenv(find_dotenv())
 
 FORCED_REBALANCE = str2bool(os.getenv("FORCED_REBALANCE", False))
 LIVE_TRADE = str2bool(os.getenv("LIVE_TRADE", False))
@@ -64,30 +65,34 @@ print_orders_table(portfolio)
 # # Email Positions
 EMAIL_POSITIONS = str2bool(os.getenv("EMAIL_POSITIONS", False))
 
-# --- pull stress/regime info from meta (safe defaults) ---
-meta = (portfolio or {}).get("meta", {}) or {}
-vt_diag = meta.get("vt_diag", {}) or {}
-stress_level = vt_diag.get(
-    "regime", "N/A"
-)  # 'stress'/'elevated'/'benign'/'default' or N/A
-vt_mode = meta.get("vt_mode", "static")
-vt_target_used = meta.get("vt_target_used", None)
-vt_lkbk_used = meta.get("vt_lkbk_used", None)
+message_body_html = ""
+message_body_plain = ""
+if USE_DYNAMIC_VT:
+    # --- pull stress/regime info from meta (safe defaults) ---
+    meta = (portfolio or {}).get("meta", {}) or {}
+    vt_diag = meta.get("vt_diag", {}) or {}
+    stress_level = vt_diag.get(
+        "regime", "N/A"
+    )  # 'stress'/'elevated'/'benign'/'default' or N/A
+    vt_mode = meta.get("vt_mode", "static")
+    vt_target_used = meta.get("vt_target_used", None)
+    vt_lkbk_used = meta.get("vt_lkbk_used", None)
 
-# --- message body header ---
-message_body_html = (
-    f"Portfolio Value: {portfolio_value}<br>"
-    f"VT mode: {vt_mode}<br>"
-    f"Stress level: {stress_level}<br>"
-    f"VT used: target={vt_target_used} lookback={vt_lkbk_used}<br><br>"
-)
+    # --- message body header ---
+    message_body_html = (
+        f"Portfolio Value: {portfolio_value}<br>"
+        f"VT mode: {vt_mode}<br>"
+        f"Stress level: {stress_level}<br>"
+        f"VT used: target={vt_target_used} lookback={vt_lkbk_used}<br><br>"
+    )
 
-message_body_plain = (
-    f"Portfolio Value: {portfolio_value}\n"
-    f"VT mode: {vt_mode}\n"
-    f"Stress level: {stress_level}\n"
-    f"VT used: target={vt_target_used} lookback={vt_lkbk_used}\n\n"
-)
+    message_body_plain = (
+        f"Portfolio Value: {portfolio_value}\n"
+        f"VT mode: {vt_mode}\n"
+        f"Stress level: {stress_level}\n"
+        f"VT used: target={vt_target_used} lookback={vt_lkbk_used}\n\n"
+    )
+
 
 # --- orders ---
 for position in portfolio.get("orders", []):
@@ -120,8 +125,10 @@ if EMAIL_POSITIONS:
 
     status = "Live" if LIVE_TRADE else "Test"
 
-    # NOTE: fixed typo "Montly"->"Monthly" (optional; remove if you prefer unchanged)
-    subject = f"Monthly Trend Algo Report - {status} | regime={stress_level}"
+    if USE_DYNAMIC_VT:
+        subject = f"Monthly Trend Algo Report - {status} | regime={stress_level}"
+    else:
+        subject = f"Monthly Trend Algo Report - {status}"
 
     for to_address in TO_ADDRESSES:
         ses.send_html_email(
