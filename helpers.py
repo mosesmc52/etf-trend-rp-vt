@@ -187,6 +187,79 @@ def _pick_inverse_or_cash(
     return max(scores, key=scores.get)
 
 
+def _compute_drawdown(px_ser: pd.Series) -> float:
+    s = px_ser.dropna()
+    if len(s) < 10:
+        return np.nan
+    return float((s / s.cummax() - 1.0).min())
+
+
+def _select_vt_pair_from_regime(
+    *,
+    px_proxy: pd.Series,
+    rets_all: pd.DataFrame,
+    asof: pd.Timestamp,
+    vt_regime_params: Dict[str, Tuple[float, int]],
+) -> Tuple[float, int, Dict[str, float]]:
+    """
+    Decide (VT_TARGET, VT_LKBK) using only data up to `asof`.
+
+    vt_regime_params must include keys:
+      - "stress", "benign", "elevated", "default"
+    Each value is (vt_target, vt_lkbk).
+
+    Returns: (vt_target, vt_lkbk, diagnostics)
+    """
+    # proxy returns
+    proxy_px = px_proxy.loc[:asof].dropna()
+    proxy_rets = proxy_px.pct_change().dropna()
+
+    vol_60 = (
+        (proxy_rets.tail(60).std() * np.sqrt(252)) if len(proxy_rets) >= 60 else np.nan
+    )
+    dd_6m = _compute_drawdown(proxy_px.tail(126)) if len(proxy_px) >= 126 else np.nan
+
+    # correlation across sleeves
+    sub = rets_all.loc[:asof].tail(60).dropna(axis=1, how="any")
+    if sub.shape[1] >= 2:
+        c = sub.corr().values
+        avg_corr_60 = float(c[np.triu_indices_from(c, 1)].mean())
+    else:
+        avg_corr_60 = np.nan
+
+    # --- default thresholds (same as your notebook logic) ---
+    stress = (np.isfinite(vol_60) and vol_60 > 0.22) or (
+        np.isfinite(dd_6m) and dd_6m < -0.10
+    )
+    elevated = (
+        (np.isfinite(vol_60) and vol_60 > 0.17)
+        or (np.isfinite(dd_6m) and dd_6m < -0.06)
+        or (np.isfinite(avg_corr_60) and avg_corr_60 > 0.60)
+    )
+    benign = (np.isfinite(vol_60) and vol_60 < 0.12) and (
+        np.isfinite(dd_6m) and dd_6m > -0.03
+    )
+
+    if stress:
+        key = "stress"
+    elif benign:
+        key = "benign"
+    elif elevated:
+        key = "elevated"
+    else:
+        key = "default"
+
+    vt_target, vt_lkbk = vt_regime_params[key]
+
+    diag = {
+        "regime": key,
+        "vol_60": float(vol_60) if np.isfinite(vol_60) else np.nan,
+        "dd_6m": float(dd_6m) if np.isfinite(dd_6m) else np.nan,
+        "avg_corr_60": float(avg_corr_60) if np.isfinite(avg_corr_60) else np.nan,
+    }
+    return float(vt_target), int(vt_lkbk), diag
+
+
 def process_position(api, security, qty, is_live_trade=False):
     is_existing_position = False
     try:
@@ -603,19 +676,36 @@ def _ema_blend(
     return out
 
 
-def _target_gross_from_cov(rets_window: pd.DataFrame, weights: pd.Series) -> float:
-    if VT_TARGET is None or rets_window.empty:
+def _target_gross_from_cov(
+    rets_window: pd.DataFrame,
+    weights: pd.Series,
+    *,
+    vt_target: float | None,
+    gross_cap: float,
+    allow_margin: bool,
+) -> float:
+    """
+    Compute a portfolio gross scaler based on realized vol of the weighted basket.
+
+    - vt_target: annualized volatility target (e.g., 0.12). If None, returns 1.0.
+    - gross_cap: cap on gross exposure.
+    - allow_margin: if False, cap gross at 1.0 even if gross_cap > 1.
+    """
+    if vt_target is None or rets_window.empty:
         return 1.0
+
     cov = rets_window.cov() * 252.0
     w = weights.reindex(rets_window.columns).fillna(0.0).values
     port_var = float(w @ cov.values @ w.T)
     port_vol = float(np.sqrt(max(port_var, 0.0)))
     if port_vol <= 0:
         return 1.0
-    gross = VT_TARGET / port_vol
-    gross = min(gross, GROSS_CAP)
-    if not ALLOW_MARGIN:
+
+    gross = float(vt_target) / port_vol
+    gross = min(gross, float(gross_cap))
+    if not allow_margin:
         gross = min(gross, 1.0)
+
     return float(gross)
 
 
@@ -633,6 +723,9 @@ def compute_today_target_weights_dual_mom_equity(
     mom_lkbk: int = MOM_LKBK,
     mom_skip: int = MOM_SKIP,
     req_pos_mom: bool = REQ_POS_MOM,
+    use_dynamic_vt: bool = False,
+    vt_regime_params: Dict[str, Tuple[float, int]] | None = None,
+    proxy_ticker: str | None = None,
 ):
     """
     Notebook-aligned live weights (no inverse sleeve):
@@ -672,6 +765,40 @@ def compute_today_target_weights_dual_mom_equity(
     if len(px.index) < 3:
         return None, {"reason": "insufficient history", "date": str(today.date())}, px
     asof = px.index[-2]
+
+    # -----------------------------
+    # Dynamic VT regime selection (as-of prior day)
+    # -----------------------------
+    vt_target_use = VT_TARGET
+    vt_lkbk_use = VT_LKBK
+    vt_diag = {}
+
+    if use_dynamic_vt:
+        # Default regime map if not provided
+        if vt_regime_params is None:
+            vt_regime_params = {
+                "stress": (0.06, 20),
+                "benign": (0.14, 20),
+                "elevated": (0.10, 20),
+                "default": (0.12, 20),
+            }
+
+        # choose proxy series for regime detection
+        if proxy_ticker and proxy_ticker in px.columns:
+            px_proxy = px[proxy_ticker]
+        elif len(equity_cands) > 0 and equity_cands[0] in px.columns:
+            px_proxy = px[equity_cands[0]]
+        else:
+            # fallback: average of risky sleeves that exist
+            exist = [t for t in (equity_cands + other_sleeves) if t in px.columns]
+            px_proxy = px[exist].mean(axis=1) if exist else px[cash]
+
+        vt_target_use, vt_lkbk_use, vt_diag = _select_vt_pair_from_regime(
+            px_proxy=px_proxy,
+            rets_all=rets,
+            asof=asof,
+            vt_regime_params=vt_regime_params,
+        )
 
     # MA gate for a ticker using data up to asof
     def is_on(t: str) -> bool:
@@ -755,11 +882,15 @@ def compute_today_target_weights_dual_mom_equity(
         w[cash] = 1.0
 
     # --- 6) Vol targeting (only for risky mode) ---
-    if float(w[risky_sleeves].sum()) > 0 and VT_TARGET is not None:
-        cov_win = rets[risky_sleeves].loc[:asof].tail(VT_LKBK)
-        gross = _target_gross_from_cov(cov_win, w[risky_sleeves])
-        w[risky_sleeves] = w[risky_sleeves] * gross
-        w[cash] = 1.0 - float(w[risky_sleeves].sum())
+    if float(w[risky_sleeves].sum()) > 0 and vt_target_use is not None:
+        cov_win = rets[risky_sleeves].loc[:asof].tail(int(vt_lkbk_use))
+        gross = _target_gross_from_cov(
+            cov_win,
+            w[risky_sleeves],
+            vt_target=float(vt_target_use),
+            gross_cap=float(GROSS_CAP),
+            allow_margin=bool(ALLOW_MARGIN),
+        )
 
     # Clean dust / renormalize
     w[w.abs() < 1e-8] = 0.0
@@ -780,6 +911,10 @@ def compute_today_target_weights_dual_mom_equity(
         "on_sleeves": allowed_risky,
         "gross_risky": float(w[risky_sleeves].sum()),
         "cash_weight": float(w.get(cash, 0.0)),
+        "vt_mode": "dynamic" if use_dynamic_vt else "static",
+        "vt_target_used": float(vt_target_use) if vt_target_use is not None else None,
+        "vt_lkbk_used": int(vt_lkbk_use) if vt_target_use is not None else None,
+        "vt_diag": vt_diag,
     }
 
     # Persist EMA state for risky sleeves only
@@ -870,6 +1005,9 @@ def run_single_iteration(
     equity_fraction: float = 1.0,
     liquidate_out_of_universe: bool = True,
     ignore_liquidation_symbols: set[str] | None = None,
+    vt_regime_params: Dict[str, Tuple[float, int]] | None = None,
+    use_dynamic_vt: bool = False,
+    proxy_ticker: str | None = None,
 ):
     """
     - Computes today's target weights (or exits with 'not a rebalance day').
@@ -884,6 +1022,9 @@ def run_single_iteration(
         cash=cash,
         ma_fixed=ma_fixed,
         force_rebalance=force_rebalance,
+        use_dynamic_vt=use_dynamic_vt,
+        vt_regime_params=vt_regime_params,
+        proxy_ticker=proxy_ticker,
     )
 
     if w is None:
@@ -931,7 +1072,11 @@ def run_single_iteration(
 def print_orders_table(result: dict):
 
     def fmt_num(x, prec=3):
-        return f"{x:.{prec}f}" if isinstance(x, (int, float)) and pd.notna(x) else "N/A"
+        return (
+            f"{x:.{prec}f}"
+            if isinstance(x, (int, float, np.floating)) and pd.notna(x)
+            else "N/A"
+        )
 
     meta = result.get("meta", {}) or {}
     date = meta.get("date", "N/A")
@@ -940,15 +1085,30 @@ def print_orders_table(result: dict):
     gross = fmt_num(meta.get("gross_risky"))
     cash = fmt_num(meta.get("cash_weight"))
 
+    # --- NEW: dynamic VT regime diagnostics (stress level) ---
+    vt_mode = meta.get("vt_mode", "static")
+    vt_target_used = meta.get("vt_target_used", None)
+    vt_lkbk_used = meta.get("vt_lkbk_used", None)
+
+    vt_diag = meta.get("vt_diag", {}) or {}
+    stress_level = vt_diag.get("regime", "N/A")
+    vol_60 = vt_diag.get("vol_60", np.nan)
+    dd_6m = vt_diag.get("dd_6m", np.nan)
+    avg_corr_60 = vt_diag.get("avg_corr_60", np.nan)
+
     if reason:
         print(f"Rebalance date: {date} | reason={reason}")
         if not result.get("orders"):
             print("(No orders)")
         return
 
-    print(
-        f"Rebalance date: {date} | sleeves_on={on} | gross_sleeves={gross} | cash={cash}"
+    header = (
+        f"Rebalance date: {date} | sleeves_on={on} | gross_sleeves={gross} | cash={cash}\n"
+        f"VT mode={vt_mode} | stress_level={stress_level} | "
+        f"vt_target_used={fmt_num(vt_target_used, 3)} | vt_lkbk_used={vt_lkbk_used}\n"
+        f"diag: vol_60={fmt_num(vol_60, 3)} | dd_6m={fmt_num(dd_6m, 3)} | avg_corr_60={fmt_num(avg_corr_60, 3)}"
     )
+    print(header)
 
     orders = result.get("orders", [])
     if not orders:
@@ -957,7 +1117,9 @@ def print_orders_table(result: dict):
 
     print("symbol   action   target_qty   diff     price     alloc_w")
     for o in orders:
+        px = o.get("price", np.nan)
+        alloc_w = o.get("alloc_w", np.nan)
         print(
-            f"{o['symbol']:6}  {o['action']:6}  {o['target_qty']:11d}  {o['diff']:6d}  "
-            f"{o['price']:9.4f}  {o['alloc_w']:.4f}"
+            f"{o['symbol']:6}  {o['action']:6}  {int(o['target_qty']):11d}  {int(o['diff']):6d}  "
+            f"{(float(px) if pd.notna(px) else np.nan):9.4f}  {float(alloc_w):.4f}"
         )
