@@ -1,6 +1,6 @@
 import os
 
-import alpaca_trade_api as tradeapi
+from alpaca_adapter import AlpacaAPI
 from dotenv import find_dotenv, load_dotenv
 from helpers import getenv_float, print_orders_table, run_single_iteration, str2bool
 from log import log
@@ -37,10 +37,17 @@ FORCED_REBALANCE = str2bool(os.getenv("FORCED_REBALANCE", False))
 LIVE_TRADE = str2bool(os.getenv("LIVE_TRADE", False))
 log(f"Running in {'LIVE' if LIVE_TRADE else 'TEST'} mode", "info")
 
-api = tradeapi.REST(
-    os.getenv("ALPACA_KEY_ID"),
-    os.getenv("ALPACA_SECRET_KEY"),
-    base_url=os.getenv("ALPACA_BASE_URL"),
+alpaca_key = os.getenv("ALPACA_KEY_ID")
+alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
+base_url = (os.getenv("ALPACA_BASE_URL") or "").lower()
+
+# Simple heuristic: treat "paper" URLs as paper trading
+is_paper = ("paper" in base_url) or str2bool(os.getenv("ALPACA_PAPER", True))
+
+api = AlpacaAPI.from_env(
+    api_key=alpaca_key,
+    secret_key=alpaca_secret,
+    paper=is_paper,
 )
 
 account = api.get_account()

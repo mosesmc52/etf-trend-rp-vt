@@ -5,11 +5,12 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-import alpaca_trade_api as tradeapi
 import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
-from alpaca_trade_api.rest import APIError, TimeFrame
+from alpaca.common.exceptions import APIError
+from alpaca.data.timeframe import TimeFrame
+from alpaca_adapter import AlpacaAPI
 
 # ---------- Config (match your backtest) ----------
 
@@ -261,49 +262,34 @@ def _select_vt_pair_from_regime(
 
 
 def process_position(api, security, qty, is_live_trade=False):
-    is_existing_position = False
     try:
-        position = api.get_position(security)
-        current_qty = int(position.qty)
-        is_existing_position = True
-    except tradeapi.rest.APIError:
+        position = api.get_position(security)  # adapter -> trading.get_open_position
+        current_qty = int(float(getattr(position, "qty", 0)))
+
+    except APIError:
         current_qty = 0
 
     diff = qty - current_qty
 
     if is_live_trade:
-        if is_existing_position:
-            if diff > 0:
-                api.submit_order(
-                    symbol=security,
-                    time_in_force="day",
-                    side=BUY,
-                    type="market",
-                    qty=diff,
-                )
-            elif diff < 0:
-                api.submit_order(
-                    symbol=security,
-                    time_in_force="day",
-                    side=SELL,
-                    type="market",
-                    qty=abs(diff),
-                )
-        else:
-            if qty > 0:
-                api.submit_order(
-                    symbol=security,
-                    time_in_force="day",
-                    side=BUY,
-                    type="market",
-                    qty=qty,
-                )
+        if diff > 0:
+            api.submit_order(
+                symbol=security,
+                time_in_force="day",
+                side=BUY,
+                type="market",
+                qty=abs(diff),
+            )
+        elif diff < 0:
+            api.submit_order(
+                symbol=security,
+                time_in_force="day",
+                side=SELL,
+                type="market",
+                qty=abs(diff),
+            )
 
-    if is_existing_position:
-        action = BUY if diff > 0 else SELL
-    else:
-        action = BUY
-
+    action = "NOOP" if diff == 0 else (BUY if diff > 0 else SELL)
     return action, qty, diff
 
 
@@ -328,16 +314,13 @@ def _momentum_score(
 def price_history(
     api,
     ticker: str,
-    start_date: datetime.date,
-    end_date: datetime.date,
+    start_date,
+    end_date,
     feed: str = "iex",
 ):
-    """
-    Fetch daily bars using Alpaca Data API.
-    Tries IEX (free) by default; auto-retries with IEX if SIP is denied.
-    """
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
+
     try:
         return api.get_bars(
             ticker,
@@ -349,6 +332,7 @@ def price_history(
         )
     except APIError as e:
         msg = str(e).lower()
+        # Preserve your SIP subscription fallback
         if "sip" in msg and "subscription" in msg:
             return api.get_bars(
                 ticker,
@@ -468,24 +452,40 @@ def _is_rebalance_day(
 # ==========================================
 # Bars → pandas Series (robust converter)
 # ==========================================
-def _bars_to_series_close(bars) -> pd.Series:
+def _bars_to_series_close(bars, symbol: str | None = None) -> pd.Series:
     """
-    Convert Alpaca bars (DataFrame with timestamp + close) to a daily Series of closes.
-    - Drops intraday time, keeps DATE only
-    - If multiple rows per day exist, keeps the LAST close
-    """
+    Convert Alpaca bars to a daily close Series.
 
-    # If the object has a .df property (common with Alpaca SDK)
+    alpaca-py BarSet.df is typically MultiIndex: (symbol, timestamp).
+    """
+    if bars is None:
+        return pd.Series(dtype=float)
+
     if hasattr(bars, "df"):
         df = bars.df.copy()
     else:
-        # If it's already a DataFrame
         try:
             df = pd.DataFrame(bars)
         except Exception:
             return pd.Series(dtype=float)
 
-    if df.empty or "close" not in df.columns:
+    if df.empty:
+        return pd.Series(dtype=float)
+
+    # If MultiIndex (symbol, timestamp), slice to one symbol
+    if isinstance(df.index, pd.MultiIndex):
+        if symbol is None:
+            # if caller didn't pass symbol, try to infer the first
+            try:
+                symbol = df.index.get_level_values(0)[0]
+            except Exception:
+                return pd.Series(dtype=float)
+        try:
+            df = df.xs(symbol, level=0)
+        except Exception:
+            return pd.Series(dtype=float)
+
+    if "close" not in df.columns:
         return pd.Series(dtype=float)
 
     # Ensure datetime index
@@ -497,15 +497,9 @@ def _bars_to_series_close(bars) -> pd.Series:
         else:
             return pd.Series(dtype=float)
 
-    # Normalize to date (strip time zone and intraday time)
     dates = df.index.tz_convert(None).normalize()
-
-    # Build series of closes
     ser = pd.Series(df["close"].astype(float).values, index=dates)
-
-    # If multiple bars per day, keep the last close
-    ser = ser.groupby(level=0).last().dropna().sort_index()
-    return ser
+    return ser.groupby(level=0).last().dropna().sort_index()
 
 
 def _download_history_alpaca(api, tickers, ma_fixed, min_days=400) -> pd.DataFrame:
