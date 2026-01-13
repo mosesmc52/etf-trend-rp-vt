@@ -2,7 +2,7 @@ name: Ephemeral Daily Run (DigitalOcean)
 
 on:
   schedule:
-    - cron: "0 18 * * 1-5"
+    - cron: "0 23 * * 1-5"
   workflow_dispatch: {}
 
 jobs:
