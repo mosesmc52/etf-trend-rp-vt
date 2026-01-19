@@ -369,58 +369,46 @@ def _month_end_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
 
 
 # --- add this helper ---
-def _last_trading_day_of_week(today: pd.Timestamp) -> pd.Timestamp:
+def _tuesday_trading_day_of_week(today: pd.Timestamp) -> pd.Timestamp:
     """
-    Return the last trading day (as a date-like Timestamp, tz-naive, normalized)
-    for the ISO week containing `today`.
+    Return the Tuesday trading day (tz-naive, normalized) for the ISO week
+    containing `today`.
 
-    Tries pandas-market-calendars (XNYS). Falls back to calendar Friday if not available.
+    - If Tuesday is a holiday, returns the next available trading day
+      in that week (typically Wednesday).
+    - Uses NYSE calendar (XNYS) when available.
+    - Falls back to calendar Tuesday if calendar data is unavailable.
     """
-    # Normalize 'today' to a date-like ts
+    # Normalize input
     today = pd.Timestamp(today).tz_localize(None).normalize()
 
     # Week bounds (Mon..Sun)
     week_start = today - pd.Timedelta(days=today.weekday())  # Monday
     week_end = week_start + pd.Timedelta(days=6)  # Sunday
 
-    # Try robust exchange calendar if installed
+    # Target calendar Tuesday
+    target_tuesday = week_start + pd.Timedelta(days=1)
 
-    nyse = mcal.get_calendar("XNYS")
-    sched = nyse.schedule(start_date=week_start.date(), end_date=week_end.date())
-    if not sched.empty:
-        # Index are session dates with tz; take last, drop tz and time
-        last = pd.Timestamp(sched.index[-1]).tz_localize(None).normalize()
-        return last
+    # Use exchange calendar if available
+    if mcal is not None:
+        nyse = mcal.get_calendar("XNYS")
+        sched = nyse.schedule(
+            start_date=week_start.date(),
+            end_date=week_end.date(),
+        )
 
-    # Fallback: calendar Friday of this week (W-FRI anchored period end)
-    end_of_week = today.to_period("W-FRI").end_time.normalize()
-    return end_of_week
+        if not sched.empty:
+            sessions = pd.Index(
+                pd.Timestamp(d).tz_localize(None).normalize() for d in sched.index
+            )
 
+            # First session on or after Tuesday
+            tuesday_or_next = sessions[sessions >= target_tuesday]
+            if len(tuesday_or_next) > 0:
+                return tuesday_or_next[0]
 
-# --- optionally keep this for other callers (completed weeks index) ---
-def _week_end_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    """
-    Last trading day of each *completed* week from `idx`.
-    (Excludes the current, possibly incomplete, week.)
-    """
-    if len(idx) == 0:
-        return idx
-
-    idx = pd.DatetimeIndex(idx).tz_localize(None).normalize()
-    # Group by ISO year/week and take last in each group
-    df = pd.Series(1, index=idx)
-    week_last = (
-        df.groupby([idx.isocalendar().year, idx.isocalendar().week]).tail(1).index
-    )
-
-    # Drop the current week’s last day (to avoid midweek rebalance)
-    today_week = idx[-1].isocalendar().week
-    today_year = idx[-1].isocalendar().year
-    mask = ~(
-        (week_last.isocalendar().year == today_year)
-        & (week_last.isocalendar().week == today_week)
-    )
-    return week_last[mask]
+    # Fallback: calendar Tuesday
+    return target_tuesday
 
 
 # --- replace your _is_rebalance_day with this ---
@@ -443,7 +431,7 @@ def _is_rebalance_day(
 
     if rule.startswith("W"):
 
-        ldw = _last_trading_day_of_week(today)
+        ldw = _tuesday_trading_day_of_week(today)
         return today == ldw
 
     return True
