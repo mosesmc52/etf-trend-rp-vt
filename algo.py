@@ -41,9 +41,10 @@ if USE_REGIME_DETECTOR:
     )
     as_of = datetime.now()
     result = detector.dominant_regime(as_of=as_of)
-    if result["dominant_regime"] == "stable_risk_on":
+    regime = result["dominant_regime"]
+    if regime == "stable_risk_on":
         EQUITY_FRACTION = 1.0
-    elif result["dominant_regime"] == "fragile":
+    elif regime == "fragile":
         EQUITY_FRACTION = 0.3
     else:
         EQUITY_FRACTION = 0.0
@@ -154,9 +155,9 @@ if EMAIL_POSITIONS:
     status = "Live" if LIVE_TRADE else "Test"
 
     if USE_DYNAMIC_VT:
-        subject = f"Monthly Trend Algo Report - {status} | regime={stress_level}"
+        subject = f"Monthly Trend Algo Report - {status} | regime={regime.replace("_", " ").title()} | stress-level={stress_level}"
     else:
-        subject = f"Monthly Trend Algo Report - {status}"
+        subject = f"Monthly Trend Algo Report - {status} | regime={regime.replace("_", " ").title()}"
 
     for to_address in TO_ADDRESSES:
         ses.send_html_email(
