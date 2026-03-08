@@ -30,18 +30,21 @@ vt_map = {
     "default": (0.12, 20),
 }
 
+
+detector = RegimeDetector(
+    ema_span=60,
+    lookback=252,
+    vix_high_pct=0.70,
+    spread_wide_pct=0.70,
+    credit_mode="ratio",
+    shift_regime_by_one_day=True,
+)
+as_of = datetime.now()
+result = detector.dominant_regime(as_of=as_of)
+regime = result["dominant_regime"]
+
 if USE_REGIME_DETECTOR:
-    detector = RegimeDetector(
-        ema_span=60,
-        lookback=252,
-        vix_high_pct=0.70,
-        spread_wide_pct=0.70,
-        credit_mode="ratio",
-        shift_regime_by_one_day=True,
-    )
-    as_of = datetime.now()
-    result = detector.dominant_regime(as_of=as_of)
-    regime = result["dominant_regime"]
+
     if regime == "stable_risk_on":
         EQUITY_FRACTION = 1.0
     elif regime == "fragile":
