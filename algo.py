@@ -1,9 +1,11 @@
 import os
+from datetime import datetime
 
 from alpaca_adapter import AlpacaAPI
 from dotenv import find_dotenv, load_dotenv
 from helpers import getenv_float, print_orders_table, run_single_iteration, str2bool
 from log import log
+from regime_detector import RegimeDetector
 from SES import AmazonSES
 
 load_dotenv(find_dotenv())
@@ -19,7 +21,7 @@ MA_FIXED = {
     "GLDM": 110,
 }
 
-
+USE_REGIME_DETECTOR = str2bool(os.getenv("USE_REGIME_DETECTOR", False))
 USE_DYNAMIC_VT = str2bool(os.getenv("USE_DYNAMIC_VT", False))
 vt_map = {
     "stress": (0.06, 20),
@@ -28,7 +30,27 @@ vt_map = {
     "default": (0.12, 20),
 }
 
-EQUITY_FRACTION = getenv_float("EQUITY_FRACTION", 1)
+if USE_REGIME_DETECTOR:
+    detector = RegimeDetector(
+        ema_span=60,
+        lookback=252,
+        vix_high_pct=0.70,
+        spread_wide_pct=0.70,
+        credit_mode="ratio",
+        shift_regime_by_one_day=True,
+    )
+    as_of = datetime.now()
+    result = detector.dominant_regime(as_of=as_of)
+    regime = result["dominant_regime"]
+    if regime == "stable_risk_on":
+        EQUITY_FRACTION = 1.0
+    elif regime == "fragile":
+        EQUITY_FRACTION = 0.3
+    else:
+        EQUITY_FRACTION = 0.0
+
+else:
+    EQUITY_FRACTION = getenv_float("EQUITY_FRACTION", 1)
 
 LIQUIDATION_SYMBOLS_TO_IGNORE = None
 
@@ -133,9 +155,9 @@ if EMAIL_POSITIONS:
     status = "Live" if LIVE_TRADE else "Test"
 
     if USE_DYNAMIC_VT:
-        subject = f"Monthly Trend Algo Report - {status} | regime={stress_level}"
+        subject = f"Monthly Trend Algo Report - {status} | regime={regime.replace("_", " ").title()} | stress-level={stress_level}"
     else:
-        subject = f"Monthly Trend Algo Report - {status}"
+        subject = f"Monthly Trend Algo Report - {status} | regime={regime.replace("_", " ").title()}"
 
     for to_address in TO_ADDRESSES:
         ses.send_html_email(
