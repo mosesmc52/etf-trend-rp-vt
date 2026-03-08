@@ -1016,8 +1016,9 @@ def run_single_iteration(
 
     last_px = _get_last_prices_from_history(px[w.index])
 
-    if not (0.0 < float(equity_fraction) <= 1.0):
-        raise ValueError(f"equity_fraction must be in (0, 1], got {equity_fraction}")
+    eq_frac = float(equity_fraction)
+    if not (0.0 <= eq_frac <= 1.0):
+        raise ValueError(f"equity_fraction must be in [0, 1], got {equity_fraction}")
 
     if equity_override is not None:
         acct_equity = float(equity_override)
@@ -1025,7 +1026,7 @@ def run_single_iteration(
         acct = api.get_account()
         acct_equity = float(getattr(acct, "equity", getattr(acct, "cash", "0")))
 
-    trade_equity = acct_equity * float(equity_fraction)
+    trade_equity = acct_equity * eq_frac
 
     orders = place_orders_for_weights(
         api,
@@ -1035,7 +1036,7 @@ def run_single_iteration(
         is_live_trade=is_live_trade,
     )
 
-    if liquidate_out_of_universe and float(equity_fraction) >= 0.999:
+    if liquidate_out_of_universe and (eq_frac >= 0.999 or eq_frac <= 1e-12):
         exit_orders = _liquidate_positions_not_in_universe(
             api,
             keep_symbols=universe,
