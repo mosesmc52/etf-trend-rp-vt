@@ -85,7 +85,9 @@ if SYNC_STRATEGY_JSON_TO_SPACES:
 
     output_path = "etf-trend-rp-vt.json"
     log(f"Export Strategy Results: {output_path}", "info")
-    export_strategy_json(result=portfolio, output_path=output_path)
+    export_strategy_json(
+        result=portfolio, output_path=output_path, strategy_name="trend"
+    )
 
     log(f"Save to Spaces: {os.environ.get('SPACES_BUCKET')}", "info")
     upload_file_to_digitalocean_spaces(
