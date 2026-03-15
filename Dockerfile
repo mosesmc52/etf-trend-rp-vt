@@ -24,7 +24,6 @@ COPY algo.py .
 COPY helpers.py .
 COPY log.py .
 COPY SES.py .
-COPY regime_detector.py .
 COPY alpaca_adapter.py .
 COPY scheduler/run.sh /app/run.sh
 COPY scheduler/crontab /etc/cron.d/weekly-job

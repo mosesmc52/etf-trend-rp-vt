@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
+import boto3
 import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
@@ -1047,6 +1048,120 @@ def run_single_iteration(
         orders.extend(exit_orders)
 
     return {"meta": meta, "weights": w.to_dict(), "orders": orders}
+
+
+def export_strategy_json(
+    result: dict,
+    output_path: str = "strategy_export.json",
+    *,
+    strategy_name: str = "etf-trend-rp-vt",
+) -> dict:
+    """
+    Convert a run_single_iteration() result into the external strategy JSON shape
+    and write it to disk.
+
+    Rules:
+    - positions are all non-zero target weights from result["weights"]
+    - capital_requested uses meta["gross_risky"] when available, else gross exposure
+    - gross/net exposure are computed from the exported positions
+    - holding_period_days is inferred from the configured rebalance cadence
+    """
+    if not isinstance(result, dict):
+        raise TypeError("result must be a dict returned by run_single_iteration()")
+
+    weights = result.get("weights") or {}
+    if not isinstance(weights, dict):
+        raise TypeError('result["weights"] must be a dict when present')
+
+    positions = []
+    for symbol, target_weight in weights.items():
+        weight = float(target_weight)
+        if abs(weight) <= 1e-12:
+            continue
+        positions.append({"symbol": symbol, "target_weight": weight})
+
+    gross_exposure = float(sum(abs(p["target_weight"]) for p in positions))
+    net_exposure = float(sum(p["target_weight"] for p in positions))
+
+    meta = result.get("meta", {}) or {}
+    capital_requested = float(meta.get("gross_risky", gross_exposure))
+
+    holding_period_days = 30 if REB == "M" else 7 if REB == "W" else 0
+
+    payload = {
+        "strategy": strategy_name,
+        "active": bool(positions),
+        "capital_requested": capital_requested,
+        "positions": positions,
+        "gross_exposure": gross_exposure,
+        "net_exposure": net_exposure,
+        "holding_period_days": holding_period_days,
+    }
+
+    with open(output_path, "w", encoding="ascii") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+
+    return payload
+
+
+def upload_file_to_digitalocean_spaces(
+    file_path: str,
+    *,
+    bucket_name: str,
+    region: str,
+    object_key: str | None = None,
+    access_key: str | None = None,
+    secret_key: str | None = None,
+    content_type: str = "application/json",
+    acl: str | None = None,
+) -> dict:
+    """Upload a local file to DigitalOcean Spaces via the S3-compatible API."""
+    import boto3
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File does not exist: {file_path}")
+    if not os.path.isfile(file_path):
+        raise IsADirectoryError(
+            f"Expected a file path, got a directory or non-file path: {file_path}"
+        )
+    if not bucket_name:
+        raise ValueError("bucket_name is required")
+    if not region:
+        raise ValueError("region is required")
+
+    spaces_key = access_key or os.getenv("DO_SPACES_KEY")
+    spaces_secret = secret_key or os.getenv("DO_SPACES_SECRET")
+    if not spaces_key or not spaces_secret:
+        raise ValueError(
+            "DigitalOcean Spaces credentials are required via arguments or "
+            "DO_SPACES_KEY / DO_SPACES_SECRET environment variables."
+        )
+
+    key = object_key or os.path.basename(file_path)
+    endpoint_url = f"https://{region}.digitaloceanspaces.com"
+
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=endpoint_url,
+        aws_access_key_id=spaces_key,
+        aws_secret_access_key=spaces_secret,
+    )
+
+    extra_args = {"ContentType": content_type}
+    if acl:
+        extra_args["ACL"] = acl
+
+    client.upload_file(file_path, bucket_name, key, ExtraArgs=extra_args)
+
+    return {
+        "bucket": bucket_name,
+        "region": region,
+        "object_key": key,
+        "endpoint_url": endpoint_url,
+        "object_url": f"https://{bucket_name}.{region}.digitaloceanspaces.com/{key}",
+    }
 
 
 # ==========================================
