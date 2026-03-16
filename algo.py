@@ -164,9 +164,9 @@ if EMAIL_POSITIONS:
     status = "Live" if LIVE_TRADE else "Test"
 
     if USE_DYNAMIC_VT:
-        subject = f"Monthly Trend Algo Report - {status} | stress-level={stress_level}"
+        subject = f"Trend Algo Report - {status} | stress-level={stress_level}"
     else:
-        subject = f"Monthly Trend Algo Report - {status}"
+        subject = f"Trend Algo Report - {status}"
 
     for to_address in TO_ADDRESSES:
         ses.send_html_email(
