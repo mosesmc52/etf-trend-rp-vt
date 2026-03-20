@@ -1055,6 +1055,7 @@ def export_strategy_json(
     output_path: str = "strategy_export.json",
     *,
     strategy_name: str = "etf-trend-rp-vt",
+    equity_fraction: float = 1.0,
 ) -> dict:
     """
     Convert a run_single_iteration() result into the external strategy JSON shape
@@ -1062,9 +1063,12 @@ def export_strategy_json(
 
     Rules:
     - positions are all non-zero target weights from result["weights"]
+    - when trade_today is true, positions are exported exactly from the target portfolio
     - capital_requested uses meta["gross_risky"] when available, else gross exposure
     - gross/net exposure are computed from the exported positions
     - holding_period_days is inferred from the configured rebalance cadence
+    - trade_today is true when equity_fraction > 0, else false
+    - liquidate_when_inactive is true when equity_fraction == 0, else false
     """
     if not isinstance(result, dict):
         raise TypeError("result must be a dict returned by run_single_iteration()")
@@ -1087,10 +1091,13 @@ def export_strategy_json(
     capital_requested = float(meta.get("gross_risky", gross_exposure))
 
     holding_period_days = 30 if REB == "M" else 7 if REB == "W" else 0
+    trade_today = float(equity_fraction) > 0.0
+    liquidate_when_inactive = float(equity_fraction) == 0.0
 
     payload = {
         "strategy": strategy_name,
-        "active": bool(positions),
+        "trade_today": trade_today,
+        "liquidate_when_inactive": liquidate_when_inactive,
         "capital_requested": capital_requested,
         "positions": positions,
         "gross_exposure": gross_exposure,
