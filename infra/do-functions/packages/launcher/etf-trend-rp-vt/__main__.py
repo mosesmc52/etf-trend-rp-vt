@@ -57,6 +57,9 @@ write_files:
       AWS_SES_ACCESS_KEY_ID={env.get("AWS_SES_ACCESS_KEY_ID", "")}
       AWS_SES_SECRET_ACCESS_KEY={env.get("AWS_SES_SECRET_ACCESS_KEY", "")}
       LIVE_TRADE={env.get("LIVE_TRADE", "")}
+      USE_DYNAMIC_VT={env.get("USE_DYNAMIC_VT", "")}
+      FORCED_REBALANCE={env.get("FORCED_REBALANCE", "")}
+      ALPACA_PAPER={env.get("ALPACA_PAPER", "")}
       ALPACA_BASE_URL={env.get("ALPACA_BASE_URL", "")}
       ALPACA_KEY_ID={env.get("ALPACA_KEY_ID", "")}
       ALPACA_SECRET_KEY={env.get("ALPACA_SECRET_KEY", "")}
@@ -164,6 +167,9 @@ def main(event, context):
                 "AWS_SES_ACCESS_KEY_ID": optional_env("AWS_SES_ACCESS_KEY_ID"),
                 "AWS_SES_SECRET_ACCESS_KEY": optional_env("AWS_SES_SECRET_ACCESS_KEY"),
                 "LIVE_TRADE": optional_env("LIVE_TRADE"),
+                "USE_DYNAMIC_VT": optional_env("USE_DYNAMIC_VT"),
+                "FORCED_REBALANCE": optional_env("FORCED_REBALANCE"),
+                "ALPACA_PAPER": optional_env("ALPACA_PAPER"),
                 "ALPACA_BASE_URL": optional_env("ALPACA_BASE_URL"),
                 "ALPACA_KEY_ID": optional_env("ALPACA_KEY_ID"),
                 "ALPACA_SECRET_KEY": optional_env("ALPACA_SECRET_KEY"),

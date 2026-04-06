@@ -36,6 +36,9 @@ packages:
           AWS_SES_ACCESS_KEY_ID: "${AWS_SES_ACCESS_KEY_ID}"
           AWS_SES_SECRET_ACCESS_KEY: "${AWS_SES_SECRET_ACCESS_KEY}"
           LIVE_TRADE: "${LIVE_TRADE}"
+          USE_DYNAMIC_VT: "${USE_DYNAMIC_VT}"
+          FORCED_REBALANCE: "${FORCED_REBALANCE}"
+          ALPACA_PAPER: "${ALPACA_PAPER}"
         triggers:
           - name: weekday-5pm
             sourceType: scheduler

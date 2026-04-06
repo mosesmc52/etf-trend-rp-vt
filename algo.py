@@ -54,8 +54,9 @@ alpaca_key = os.getenv("ALPACA_KEY_ID")
 alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
 base_url = (os.getenv("ALPACA_BASE_URL") or "").lower()
 
-# Simple heuristic: treat "paper" URLs as paper trading
-is_paper = ("paper" in base_url) or str2bool(os.getenv("ALPACA_PAPER", True))
+# Prefer an explicit ALPACA_PAPER setting. If absent, infer from the configured URL.
+alpaca_paper = os.getenv("ALPACA_PAPER")
+is_paper = str2bool(alpaca_paper) if alpaca_paper is not None else ("paper" in base_url)
 
 api = AlpacaAPI.from_env(
     api_key=alpaca_key,
