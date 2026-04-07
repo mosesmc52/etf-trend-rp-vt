@@ -80,7 +80,7 @@ portfolio = run_single_iteration(
     is_live_trade=LIVE_TRADE,
     ignore_liquidation_symbols=LIQUIDATION_SYMBOLS_TO_IGNORE,
 )
-print_orders_table(portfolio)
+out = print_orders_table(portfolio)
 
 if SYNC_STRATEGY_JSON_TO_SPACES:
 
@@ -107,50 +107,10 @@ if SYNC_STRATEGY_JSON_TO_SPACES:
 # # Email Positions
 EMAIL_POSITIONS = str2bool(os.getenv("EMAIL_POSITIONS", False))
 
-message_body_html = ""
-message_body_plain = ""
-if USE_DYNAMIC_VT:
-    # --- pull stress/regime info from meta (safe defaults) ---
-    meta = (portfolio or {}).get("meta", {}) or {}
-    vt_diag = meta.get("vt_diag", {}) or {}
-    stress_level = vt_diag.get(
-        "regime", "N/A"
-    )  # 'stress'/'elevated'/'benign'/'default' or N/A
-    vt_mode = meta.get("vt_mode", "static")
-    vt_target_used = meta.get("vt_target_used", None)
-    vt_lkbk_used = meta.get("vt_lkbk_used", None)
-
-    # --- message body header ---
-    message_body_html = (
-        f"Portfolio Value: {portfolio_value}<br>"
-        f"VT mode: {vt_mode}<br>"
-        f"Stress level: {stress_level}<br>"
-        f"VT used: target={vt_target_used} lookback={vt_lkbk_used}<br><br>"
-    )
-
-    message_body_plain = (
-        f"Portfolio Value: {portfolio_value}\n"
-        f"VT mode: {vt_mode}\n"
-        f"Stress level: {stress_level}\n"
-        f"VT used: target={vt_target_used} lookback={vt_lkbk_used}\n\n"
-    )
-
-
-# --- orders ---
-for position in portfolio.get("orders", []):
-    reason = position.get("reason", "")
-    suffix = f" [{reason}]" if reason else ""
-
-    message_body_html += (
-        f'<a clicktracking=off href="https://finviz.com/quote.ashx?t={position["symbol"]}">'
-        f'{position["symbol"]}</a>: {position["target_qty"]} '
-        f'({position["action"]} {round(position["alloc_w"],3)}){suffix}<br>'
-    )
-
-    message_body_plain += (
-        f'{position["symbol"]}: {position["target_qty"]} '
-        f'({position["action"]} {round(position["alloc_w"], 3)}){suffix}\n'
-    )
+message_body_html = f"Portfolio Value: {portfolio_value}<br>"
+message_body_plain = f"Portfolio Value: {portfolio_value}\n"
+message_body_html += "<pre>" + out.replace("\n", "<br>") + "</pre>"
+message_body_plain += out
 
 if EMAIL_POSITIONS:
     TO_ADDRESSES = [
@@ -168,6 +128,11 @@ if EMAIL_POSITIONS:
     status = "Live" if LIVE_TRADE else "Test"
 
     if USE_DYNAMIC_VT:
+        meta = (portfolio or {}).get("meta", {}) or {}
+        vt_diag = meta.get("vt_diag", {}) or {}
+        stress_level = vt_diag.get(
+            "regime", "N/A"
+        )  # 'stress'/'elevated'/'benign'/'default' or N/A
         subject = f"Trend Algo Report - {status} | stress-level={stress_level}"
     else:
         subject = f"Trend Algo Report - {status}"

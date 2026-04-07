@@ -1175,6 +1175,11 @@ def upload_file_to_digitalocean_spaces(
 # Optional: simple pretty printer
 # ==========================================
 def print_orders_table(result: dict):
+    lines = []
+
+    def emit(line=""):
+        lines.append(line)
+        print(line)
 
     def fmt_num(x, prec=3):
         return (
@@ -1202,10 +1207,10 @@ def print_orders_table(result: dict):
     avg_corr_60 = vt_diag.get("avg_corr_60", np.nan)
 
     if reason:
-        print(f"Rebalance date: {date} | reason={reason}")
+        emit(f"Rebalance date: {date} | reason={reason}")
         if not result.get("orders"):
-            print("(No orders)")
-        return
+            emit("(No orders)")
+        return "\n".join(lines) + "\n"
 
     header = (
         f"Rebalance date: {date} | sleeves_on={on} | gross_sleeves={gross} | cash={cash}\n"
@@ -1213,18 +1218,20 @@ def print_orders_table(result: dict):
         f"vt_target_used={fmt_num(vt_target_used, 3)} | vt_lkbk_used={vt_lkbk_used}\n"
         f"diag: vol_60={fmt_num(vol_60, 3)} | dd_6m={fmt_num(dd_6m, 3)} | avg_corr_60={fmt_num(avg_corr_60, 3)}"
     )
-    print(header)
+    emit(header)
 
     orders = result.get("orders", [])
     if not orders:
-        print("(No orders)")
-        return
+        emit("(No orders)")
+        return "\n".join(lines) + "\n"
 
-    print("symbol   action   target_qty   diff     price     alloc_w")
+    emit("symbol   action   target_qty   diff     price     alloc_w")
     for o in orders:
         px = o.get("price", np.nan)
         alloc_w = o.get("alloc_w", np.nan)
-        print(
+        emit(
             f"{o['symbol']:6}  {o['action']:6}  {int(o['target_qty']):11d}  {int(o['diff']):6d}  "
             f"{(float(px) if pd.notna(px) else np.nan):9.4f}  {float(alloc_w):.4f}"
         )
+
+    return "\n".join(lines) + "\n"

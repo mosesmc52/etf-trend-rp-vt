@@ -7,7 +7,7 @@ set -euo pipefail
 set -x
 export PYTHONUNBUFFERED=1
 
-RUN_LOG_FILE="${RUN_LOG_FILE:-/tmp/pairs-algo.log}"
+RUN_LOG_FILE="${RUN_LOG_FILE:-/tmp/etf-trend-rp-vt.log}"
 mkdir -p "$(dirname "$RUN_LOG_FILE")"
 touch "$RUN_LOG_FILE"
 
