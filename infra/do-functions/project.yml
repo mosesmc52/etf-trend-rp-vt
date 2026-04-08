@@ -19,7 +19,7 @@ packages:
           DO_TAG: "ephemeral-daily-run"
           DO_APP_TAG: "app-runners"
           DO_SSH_KEY_ID: "${DO_SSH_KEY_ID}"
-          EQUITY_FRACTION: $"{EQUITY_FRACTION}"
+          EQUITY_FRACTION: "${EQUITY_FRACTION}"
           JOB_IMAGE: "ghcr.io/mosesmc52/etf-trend-rp-vt:latest"
           ALPACA_BASE_URL: "${ALPACA_BASE_URL}"
           ALPACA_KEY_ID: "${ALPACA_KEY_ID}"
