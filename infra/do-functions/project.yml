@@ -41,7 +41,7 @@ packages:
           FORCED_REBALANCE: "${FORCED_REBALANCE}"
           ALPACA_PAPER: "${ALPACA_PAPER}"
         triggers:
-          - name: weekday-6pm
+          - name: trend-weekday-6pm
             sourceType: scheduler
             sourceDetails:
               # DigitalOcean scheduler cron is UTC.
