@@ -68,6 +68,7 @@ write_files:
       SPACES_BUCKET={env.get("SPACES_BUCKET", "")}
       SPACES_REGION={env.get("SPACES_REGION", "")}
       SPACES_OBJECT_KEY_PATH={env.get("SPACES_OBJECT_KEY_PATH", "")}
+      EQUITY_FRACTION={env.get("EQUITY_FRACTION", "")}
 
   - path: /opt/job/run.sh
     permissions: "0700"
@@ -132,7 +133,9 @@ runcmd:
 def main(event, context):
     do_token = require_env("DO_TOKEN")
     do_api = optional_env("DO_API", "https://api.digitalocean.com/v2")
-    job_image = env_with_default("JOB_IMAGE", "ghcr.io/mosesmc52/etf-volatility-harvest:latest")
+    job_image = env_with_default(
+        "JOB_IMAGE", "ghcr.io/mosesmc52/etf-volatility-harvest:latest"
+    )
 
     droplet_name = f"job-{int(time.time())}"
     tags = [env_with_default("DO_TAG", "ephemeral-daily-run")]
@@ -178,6 +181,7 @@ def main(event, context):
                 "SPACES_BUCKET": optional_env("SPACES_BUCKET"),
                 "SPACES_REGION": optional_env("SPACES_REGION"),
                 "SPACES_OBJECT_KEY_PATH": optional_env("SPACES_OBJECT_KEY_PATH"),
+                "EQUITY_FRACTION": optional_env("EQUITY_FRACTION"),
                 "JOB_IMAGE": job_image,
             }
         ),
