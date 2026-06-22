@@ -709,6 +709,7 @@ def compute_today_target_weights_dual_mom_equity(
     use_dynamic_vt: bool = False,
     vt_regime_params: Dict[str, Tuple[float, int]] | None = None,
     proxy_ticker: str | None = None,
+    persist_state: bool = True,
 ):
     """
     Notebook-aligned live weights (no inverse sleeve):
@@ -900,11 +901,12 @@ def compute_today_target_weights_dual_mom_equity(
         "vt_diag": vt_diag,
     }
 
-    # Persist EMA state for risky sleeves only
-    _save_state(
-        ema_prev={k: float(w.get(k, 0.0)) for k in risky_sleeves},
-        last_reb_date=today.date(),
-    )
+    if persist_state:
+        # Persist EMA state for risky sleeves only
+        _save_state(
+            ema_prev={k: float(w.get(k, 0.0)) for k in risky_sleeves},
+            last_reb_date=today.date(),
+        )
     return w, meta, px
 
 
@@ -991,6 +993,7 @@ def run_single_iteration(
     vt_regime_params: Dict[str, Tuple[float, int]] | None = None,
     use_dynamic_vt: bool = False,
     proxy_ticker: str | None = None,
+    persist_state: bool = True,
 ):
     """
     - Computes today's target weights (or exits with 'not a rebalance day').
@@ -1008,6 +1011,7 @@ def run_single_iteration(
         use_dynamic_vt=use_dynamic_vt,
         vt_regime_params=vt_regime_params,
         proxy_ticker=proxy_ticker,
+        persist_state=persist_state,
     )
 
     if w is None:
@@ -1056,6 +1060,8 @@ def export_strategy_json(
     *,
     strategy_name: str = "etf-trend-rp-vt",
     equity_fraction: float = 1.0,
+    trade_today: bool | None = None,
+    liquidate_when_inactive: bool | None = None,
 ) -> dict:
     """
     Convert a run_single_iteration() result into the external strategy JSON shape
@@ -1091,8 +1097,10 @@ def export_strategy_json(
     capital_requested = float(meta.get("gross_risky", gross_exposure))
 
     holding_period_days = 30 if REB == "M" else 7 if REB == "W" else 0
-    trade_today = float(equity_fraction) > 0.0
-    liquidate_when_inactive = float(equity_fraction) == 0.0
+    if trade_today is None:
+        trade_today = float(equity_fraction) > 0.0
+    if liquidate_when_inactive is None:
+        liquidate_when_inactive = float(equity_fraction) == 0.0
 
     payload = {
         "strategy": strategy_name,
@@ -1233,5 +1241,40 @@ def print_orders_table(result: dict):
             f"{o['symbol']:6}  {o['action']:6}  {int(o['target_qty']):11d}  {int(o['diff']):6d}  "
             f"{(float(px) if pd.notna(px) else np.nan):9.4f}  {float(alloc_w):.4f}"
         )
+
+    return "\n".join(lines) + "\n"
+
+
+def print_weights_table(result: dict):
+    lines = []
+
+    def emit(line=""):
+        lines.append(line)
+        print(line)
+
+    meta = result.get("meta", {}) or {}
+    weights = result.get("weights", {}) or {}
+    date = meta.get("date", "N/A")
+    asof = meta.get("asof", "N/A")
+    reason = meta.get("reason")
+
+    if reason:
+        emit(f"Observation date: {date} | reason={reason}")
+        return "\n".join(lines) + "\n"
+
+    emit(f"Observation date: {date} | asof={asof}")
+    emit("symbol   alloc_pct")
+
+    non_zero = [
+        (symbol, float(weight))
+        for symbol, weight in weights.items()
+        if abs(float(weight)) > 1e-12
+    ]
+
+    for symbol, weight in sorted(non_zero, key=lambda item: item[1], reverse=True):
+        emit(f"{symbol:6}  {weight * 100:8.2f}%")
+
+    if not non_zero:
+        emit("(No active allocations)")
 
     return "\n".join(lines) + "\n"
