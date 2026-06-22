@@ -11,6 +11,13 @@ This project implements a **trend-following portfolio rotation strategy** with:
 
 Data comes from the [Alpaca API](https://alpaca.markets/) (IEX feed). Orders can be simulated or submitted live using Alpaca’s trading endpoint.
 
+Runtime mode is controlled by `APP_STATE`:
+- `APP_STATE=LIVE` submits Alpaca orders.
+- `APP_STATE=PAPER` computes target allocations and simulated order diffs without submitting trades.
+- `APP_STATE=OBSERVE` reads historical data, computes target ETF allocation percentages, does not trade, and does not persist strategy state.
+
+If `APP_STATE` is unset, the app falls back to `LIVE_TRADE=true|false` for backward compatibility.
+
 ---
 
 ## How it works
@@ -45,10 +52,11 @@ Any leftover allocation goes into `CASH`.
 - `REB="W"` → last trading day of each ISO calendar week.  
 - `force_rebalance=True` overrides schedule.  
 
-9. **Orders**  
+9. **Orders / observe output**  
 Convert target weights → target quantities using latest prices, then call `process_position()` to generate buy/sell/hold actions.  
 - In backtest mode, actions are just returned.  
 - In live mode (`is_live_trade=True`), Alpaca orders are submitted.
+- In observe mode, the app reports target ETF allocation percentages instead of the order table.
 
 ---
 

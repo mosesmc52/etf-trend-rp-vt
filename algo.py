@@ -7,6 +7,7 @@ from helpers import (
     export_strategy_json,
     getenv_float,
     print_orders_table,
+    print_weights_table,
     run_single_iteration,
     str2bool,
     upload_file_to_digitalocean_spaces,
@@ -47,8 +48,20 @@ SYNC_STRATEGY_JSON_TO_SPACES = str2bool(
     os.getenv("SYNC_STRATEGY_JSON_TO_SPACES", False)
 )
 
-LIVE_TRADE = str2bool(os.getenv("LIVE_TRADE", False))
-log(f"Running in {'LIVE' if LIVE_TRADE else 'TEST'} mode", "info")
+APP_STATE = (os.getenv("APP_STATE") or os.getenv("RUN_MODE") or "").strip().upper()
+
+if APP_STATE:
+    valid_states = {"LIVE", "PAPER", "OBSERVE"}
+    if APP_STATE not in valid_states:
+        raise ValueError(
+            f"Invalid APP_STATE={APP_STATE!r}. Expected one of {sorted(valid_states)}."
+        )
+else:
+    APP_STATE = "LIVE" if str2bool(os.getenv("LIVE_TRADE", False)) else "PAPER"
+
+IS_OBSERVE = APP_STATE == "OBSERVE"
+LIVE_TRADE = APP_STATE == "LIVE"
+log(f"Running in {APP_STATE} mode", "info")
 
 alpaca_key = os.getenv("ALPACA_KEY_ID")
 alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
@@ -76,11 +89,12 @@ portfolio = run_single_iteration(
     use_dynamic_vt=USE_DYNAMIC_VT,
     vt_regime_params=vt_map,
     equity_fraction=EQUITY_FRACTION,
-    force_rebalance=FORCED_REBALANCE,
+    force_rebalance=FORCED_REBALANCE or IS_OBSERVE,
     is_live_trade=LIVE_TRADE,
     ignore_liquidation_symbols=LIQUIDATION_SYMBOLS_TO_IGNORE,
+    persist_state=not IS_OBSERVE,
 )
-out = print_orders_table(portfolio)
+out = print_weights_table(portfolio) if IS_OBSERVE else print_orders_table(portfolio)
 
 if SYNC_STRATEGY_JSON_TO_SPACES:
 
@@ -91,6 +105,8 @@ if SYNC_STRATEGY_JSON_TO_SPACES:
         output_path=output_path,
         strategy_name="trend",
         equity_fraction=EQUITY_FRACTION,
+        trade_today=False if IS_OBSERVE else None,
+        liquidate_when_inactive=False if IS_OBSERVE else None,
     )
 
     log(f"Save to Spaces: {os.environ.get('SPACES_BUCKET')}", "info")
@@ -125,7 +141,7 @@ if EMAIL_POSITIONS:
         from_address=FROM_ADDRESS,
     )
 
-    status = "Live" if LIVE_TRADE else "Paper"
+    status = APP_STATE.title()
 
     if USE_DYNAMIC_VT:
         meta = (portfolio or {}).get("meta", {}) or {}
