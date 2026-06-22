@@ -125,7 +125,7 @@ if EMAIL_POSITIONS:
         from_address=FROM_ADDRESS,
     )
 
-    status = "Live" if LIVE_TRADE else "Test"
+    status = "Live" if LIVE_TRADE else "Paper"
 
     if USE_DYNAMIC_VT:
         meta = (portfolio or {}).get("meta", {}) or {}
