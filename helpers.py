@@ -740,10 +740,19 @@ def compute_today_target_weights_dual_mom_equity(
     px = px.dropna(how="all")
     rets = px.pct_change().dropna()
     today = px.index[-1]
+    scheduled_rebalance_day = _is_rebalance_day(px.index, today, REB)
 
     # Respect schedule unless forced
-    if not force_rebalance and not _is_rebalance_day(px.index, today, REB):
-        return None, {"reason": "not a rebalance day", "date": str(today.date())}, px
+    if not force_rebalance and not scheduled_rebalance_day:
+        return (
+            None,
+            {
+                "reason": "not a rebalance day",
+                "date": str(today.date()),
+                "scheduled_rebalance_day": False,
+            },
+            px,
+        )
 
     # No-lookahead: use prior trading day for MA/momentum/cov
     if len(px.index) < 3:
@@ -889,6 +898,7 @@ def compute_today_target_weights_dual_mom_equity(
         "date": str(today.date()),
         "asof": str(asof.date()),
         "rebalance": True,
+        "scheduled_rebalance_day": scheduled_rebalance_day,
         "equity_candidates_on": eq_on,
         "equity_pick": eq_pick,
         "equity_scores": eq_scores,

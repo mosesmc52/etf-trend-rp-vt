@@ -97,6 +97,9 @@ portfolio = run_single_iteration(
 out = print_weights_table(portfolio) if IS_OBSERVE else print_orders_table(portfolio)
 
 if SYNC_STRATEGY_JSON_TO_SPACES:
+    scheduled_trade_today = bool(
+        ((portfolio or {}).get("meta", {}) or {}).get("scheduled_rebalance_day", False)
+    )
 
     output_path = "etf-trend-rp-vt.json"
     log(f"Export Strategy Results: {output_path}", "info")
@@ -105,7 +108,7 @@ if SYNC_STRATEGY_JSON_TO_SPACES:
         output_path=output_path,
         strategy_name="trend",
         equity_fraction=EQUITY_FRACTION,
-        trade_today=False if IS_OBSERVE else None,
+        trade_today=scheduled_trade_today if IS_OBSERVE else None,
         liquidate_when_inactive=False if IS_OBSERVE else None,
     )
 
