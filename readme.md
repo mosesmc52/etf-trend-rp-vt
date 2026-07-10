@@ -14,7 +14,7 @@ Data comes from the [Alpaca API](https://alpaca.markets/) (IEX feed). Orders can
 Runtime mode is controlled by `APP_STATE`:
 - `APP_STATE=LIVE` submits Alpaca orders.
 - `APP_STATE=PAPER` computes target allocations and simulated order diffs without submitting trades.
-- `APP_STATE=OBSERVE` reads historical data, computes target ETF allocation percentages, does not trade, and does not persist strategy state.
+- `APP_STATE=OBSERVE` reads historical data, computes target ETF allocation percentages on scheduled rebalance days, does not trade, and does not persist strategy state.
 
 If `APP_STATE` is unset, the app falls back to `LIVE_TRADE=true|false` for backward compatibility.
 
@@ -50,7 +50,7 @@ Any leftover allocation goes into `CASH`.
 8. **Rebalance schedule**  
 - `REB="M"` → last trading day of each month.  
 - `REB="W"` → last trading day of each ISO calendar week.  
-- `force_rebalance=True` overrides schedule.  
+- `force_rebalance=True` overrides schedule, including in observe mode.  
 
 9. **Orders / observe output**  
 Convert target weights → target quantities using latest prices, then call `process_position()` to generate buy/sell/hold actions.  
