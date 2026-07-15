@@ -1,14 +1,18 @@
 # === single_iteration_trader.py ===
+from __future__ import annotations
+
 import json
 import math
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple
 
 import boto3
 import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
+from pandas.tseries.offsets import BMonthEnd, MonthEnd
 from alpaca.common.exceptions import APIError
 from alpaca.data.timeframe import TimeFrame
 from alpaca_adapter import AlpacaAPI
@@ -36,6 +40,7 @@ ALLOW_MARGIN = False  # if True, allows gross > 1 up to GROSS_CAP
 BUY, SELL = "buy", "sell"
 
 DEFAULT_MA = 200
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def str2bool(value):
@@ -70,6 +75,35 @@ def getenv_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _current_market_date() -> pd.Timestamp:
+    return pd.Timestamp(datetime.now(MARKET_TIMEZONE).date())
+
+
+def result_trade_today(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+
+    meta = result.get("meta", {}) or {}
+    if not isinstance(meta, dict):
+        return False
+
+    if meta.get("reason"):
+        return False
+
+    if not bool(meta.get("rebalance", False)):
+        return False
+
+    if not bool(meta.get("scheduled_rebalance_day", False)):
+        return False
+
+    run_date = meta.get("date")
+    market_data_date = meta.get("market_data_date")
+    if run_date and market_data_date and run_date != market_data_date:
+        return False
+
+    return True
 
 
 def _get_current_positions(api) -> Dict[str, int]:
@@ -369,6 +403,25 @@ def _month_end_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return df.groupby([idx.year, idx.month]).tail(1).index
 
 
+def _month_end_trading_day(today: pd.Timestamp) -> pd.Timestamp:
+    today = pd.Timestamp(today).tz_localize(None).normalize()
+    month_start = today.replace(day=1)
+    month_end = (month_start + MonthEnd(1)).normalize()
+
+    if mcal is not None:
+        nyse = mcal.get_calendar("XNYS")
+        if nyse is not None:
+            sched = nyse.schedule(
+                start_date=month_start.date(),
+                end_date=month_end.date(),
+            )
+
+            if not sched.empty:
+                return pd.Timestamp(sched.index[-1]).tz_localize(None).normalize()
+
+    return (today + BMonthEnd(0)).normalize()
+
+
 # --- add this helper ---
 def _tuesday_trading_day_of_week(today: pd.Timestamp) -> pd.Timestamp:
     """
@@ -425,10 +478,7 @@ def _is_rebalance_day(
     today = pd.Timestamp(today).tz_localize(None).normalize()
 
     if rule.startswith("M"):
-
-        # Month-end based on available trading days in idx
-        me = _month_end_index(pd.DatetimeIndex(idx).tz_localize(None))
-        return today in me
+        return today == _month_end_trading_day(today)
 
     if rule.startswith("W"):
 
@@ -436,6 +486,28 @@ def _is_rebalance_day(
         return today == ldw
 
     return True
+
+
+def next_rebalance_day(today: pd.Timestamp, reb_rule: str) -> pd.Timestamp:
+    rule = (reb_rule or "").upper()
+    today = pd.Timestamp(today).tz_localize(None).normalize()
+
+    if rule.startswith("M"):
+        this_month_rebalance = _month_end_trading_day(today)
+        if today <= this_month_rebalance:
+            return this_month_rebalance
+
+        next_month = (today.replace(day=1) + MonthEnd(1) + pd.Timedelta(days=1)).normalize()
+        return _month_end_trading_day(next_month)
+
+    if rule.startswith("W"):
+        this_week_rebalance = _tuesday_trading_day_of_week(today)
+        if today <= this_week_rebalance:
+            return this_week_rebalance
+
+        return _tuesday_trading_day_of_week(today + pd.Timedelta(days=7))
+
+    return today
 
 
 # ==========================================
@@ -739,16 +811,26 @@ def compute_today_target_weights_dual_mom_equity(
 
     px = px.dropna(how="all")
     rets = px.pct_change().dropna()
-    today = px.index[-1]
-    scheduled_rebalance_day = _is_rebalance_day(px.index, today, REB)
+    market_data_date = pd.Timestamp(px.index[-1]).tz_localize(None).normalize()
+    run_date = _current_market_date().tz_localize(None).normalize()
+    scheduled_rebalance_day = _is_rebalance_day(px.index, run_date, REB)
+    has_current_session_data = market_data_date == run_date
 
     # Respect schedule unless forced
-    if not force_rebalance and not scheduled_rebalance_day:
+    if not force_rebalance and (
+        not scheduled_rebalance_day or not has_current_session_data
+    ):
+        reason = (
+            "not a rebalance day"
+            if not scheduled_rebalance_day
+            else "market data not current for run date"
+        )
         return (
             None,
             {
-                "reason": "not a rebalance day",
-                "date": str(today.date()),
+                "reason": reason,
+                "date": str(run_date.date()),
+                "market_data_date": str(market_data_date.date()),
                 "scheduled_rebalance_day": False,
             },
             px,
@@ -756,7 +838,15 @@ def compute_today_target_weights_dual_mom_equity(
 
     # No-lookahead: use prior trading day for MA/momentum/cov
     if len(px.index) < 3:
-        return None, {"reason": "insufficient history", "date": str(today.date())}, px
+        return (
+            None,
+            {
+                "reason": "insufficient history",
+                "date": str(run_date.date()),
+                "market_data_date": str(market_data_date.date()),
+            },
+            px,
+        )
     asof = px.index[-2]
 
     # -----------------------------
@@ -895,7 +985,8 @@ def compute_today_target_weights_dual_mom_equity(
         w = w / tot
 
     meta = {
-        "date": str(today.date()),
+        "date": str(run_date.date()),
+        "market_data_date": str(market_data_date.date()),
         "asof": str(asof.date()),
         "rebalance": True,
         "scheduled_rebalance_day": scheduled_rebalance_day,
@@ -1083,7 +1174,7 @@ def export_strategy_json(
     - capital_requested uses meta["gross_risky"] when available, else gross exposure
     - gross/net exposure are computed from the exported positions
     - holding_period_days is inferred from the configured rebalance cadence
-    - trade_today is true when equity_fraction > 0, else false
+    - trade_today is inferred from the strategy result when not provided
     - liquidate_when_inactive is true when equity_fraction == 0, else false
     """
     if not isinstance(result, dict):
@@ -1108,7 +1199,7 @@ def export_strategy_json(
 
     holding_period_days = 30 if REB == "M" else 7 if REB == "W" else 0
     if trade_today is None:
-        trade_today = float(equity_fraction) > 0.0
+        trade_today = result_trade_today(result)
     if liquidate_when_inactive is None:
         liquidate_when_inactive = float(equity_fraction) == 0.0
 

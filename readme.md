@@ -16,8 +16,6 @@ Runtime mode is controlled by `APP_STATE`:
 - `APP_STATE=PAPER` computes target allocations and simulated order diffs without submitting trades.
 - `APP_STATE=OBSERVE` reads historical data, computes target ETF allocation percentages on scheduled rebalance days, does not trade, and does not persist strategy state.
 
-If `APP_STATE` is unset, the app falls back to `LIVE_TRADE=true|false` for backward compatibility.
-
 ---
 
 ## How it works

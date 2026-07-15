@@ -3,10 +3,13 @@ import os
 from alpaca_adapter import AlpacaAPI
 from dotenv import find_dotenv, load_dotenv
 from helpers import (
+    REB,
     export_strategy_json,
     getenv_float,
+    next_rebalance_day,
     print_orders_table,
     print_weights_table,
+    result_trade_today,
     run_single_iteration,
     str2bool,
     upload_file_to_digitalocean_spaces,
@@ -33,17 +36,28 @@ vt_map = {
 }
 
 
+def format_observe_allocations(weights: dict) -> list[str]:
+    if not isinstance(weights, dict):
+        return []
+
+    non_zero = [
+        (symbol, float(weight))
+        for symbol, weight in weights.items()
+        if abs(float(weight)) > 1e-12
+    ]
+    non_zero.sort(key=lambda item: item[1], reverse=True)
+    return [f"{symbol}: {weight * 100:.2f}%" for symbol, weight in non_zero]
+
+
 def get_app_state() -> str:
     app_state = (os.getenv("APP_STATE") or os.getenv("RUN_MODE") or "").strip().upper()
-    if app_state:
-        valid_states = {"LIVE", "PAPER", "OBSERVE"}
-        if app_state not in valid_states:
-            raise ValueError(
-                f"Invalid APP_STATE={app_state!r}. Expected one of {sorted(valid_states)}."
-            )
-        return app_state
-
-    return "LIVE" if str2bool(os.getenv("LIVE_TRADE", False)) else "PAPER"
+    valid_states = {"LIVE", "PAPER", "OBSERVE"}
+    if app_state not in valid_states:
+        raise ValueError(
+            "APP_STATE must be set to one of "
+            f"{sorted(valid_states)}; got {app_state!r}."
+        )
+    return app_state
 
 
 def is_paper_account() -> bool:
@@ -97,14 +111,10 @@ def main():
         persist_state=not is_observe,
     )
     out = print_weights_table(portfolio) if is_observe else print_orders_table(portfolio)
+    scheduled_trade_today = result_trade_today(portfolio)
+    meta = (portfolio or {}).get("meta", {}) or {}
 
     if sync_strategy_json_to_spaces:
-        scheduled_trade_today = bool(
-            ((portfolio or {}).get("meta", {}) or {}).get(
-                "scheduled_rebalance_day", False
-            )
-        )
-
         output_path = "etf-trend-rp-vt.json"
         log(f"Export Strategy Results: {output_path}", "info")
         export_strategy_json(
@@ -127,10 +137,36 @@ def main():
         )
 
     portfolio_value_display = f"${portfolio_value:,.2f}"
+    trade_today_display = "Yes" if scheduled_trade_today else "No"
+    run_date = meta.get("date")
+    next_rebalance_display = (
+        str(next_rebalance_day(run_date, REB).date()) if run_date is not None else "N/A"
+    )
+    allocation_lines = (
+        format_observe_allocations((portfolio or {}).get("weights", {}))
+        if is_observe and scheduled_trade_today
+        else []
+    )
     message_body_html = (
         f"<strong>Portfolio Value:</strong> {portfolio_value_display}<br><br>"
     )
     message_body_plain = f"Portfolio Value: {portfolio_value_display}\n\n"
+    if is_observe:
+        message_body_html += (
+            f"<strong>Trade Today:</strong> {trade_today_display}<br><br>"
+        )
+        message_body_html += (
+            f"<strong>Next Rebalance Day:</strong> {next_rebalance_display}<br><br>"
+        )
+        message_body_plain += f"Trade Today: {trade_today_display}\n\n"
+        message_body_plain += f"Next Rebalance Day: {next_rebalance_display}\n\n"
+        if allocation_lines:
+            message_body_html += "<strong>Portfolio Allocations:</strong><br><pre>"
+            message_body_html += "<br>".join(allocation_lines)
+            message_body_html += "</pre><br>"
+            message_body_plain += (
+                "Portfolio Allocations:\n" + "\n".join(allocation_lines) + "\n\n"
+            )
     message_body_html += "<pre>" + out.replace("\n", "<br>") + "</pre>"
     message_body_plain += out
 
@@ -150,7 +186,6 @@ def main():
         status = app_state.title()
 
         if use_dynamic_vt:
-            meta = (portfolio or {}).get("meta", {}) or {}
             vt_diag = meta.get("vt_diag", {}) or {}
             stress_level = vt_diag.get("regime", "N/A")
             subject = f"Trend Algo Report - {status} | stress-level={stress_level}"
