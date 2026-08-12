@@ -1205,6 +1205,7 @@ def export_strategy_json(
 
     payload = {
         "strategy": strategy_name,
+        "initialize_portfolio": True,
         "trade_today": trade_today,
         "liquidate_when_inactive": liquidate_when_inactive,
         "capital_requested": capital_requested,

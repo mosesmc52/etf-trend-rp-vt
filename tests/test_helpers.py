@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 import types
 import unittest
@@ -161,6 +162,26 @@ class HelpersScheduleTests(unittest.TestCase):
                 self.helpers.next_rebalance_day(pd.Timestamp("2026-08-01"), "M"),
                 pd.Timestamp("2026-08-31"),
             )
+
+    def test_export_strategy_json_sets_initialize_portfolio_true(self):
+        output_path = "/tmp/test_strategy_export.json"
+        payload = self.helpers.export_strategy_json(
+            result={
+                "meta": {
+                    "rebalance": True,
+                    "scheduled_rebalance_day": True,
+                    "date": "2026-08-31",
+                    "market_data_date": "2026-08-31",
+                    "gross_risky": 1.0,
+                },
+                "weights": {"HYMB": 0.6, "QLD": 0.2, "SMH": 0.2},
+                "orders": [],
+            },
+            output_path=output_path,
+        )
+
+        self.assertTrue(payload["initialize_portfolio"])
+        os.remove(output_path)
 
 
 if __name__ == "__main__":
