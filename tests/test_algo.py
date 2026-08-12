@@ -98,19 +98,27 @@ class AlgoObserveModeTests(unittest.TestCase):
                                     "orders": [],
                                 }
                                 self.algo.main()
-                                return run_single_iteration.call_args.kwargs
+                                return run_single_iteration.call_args_list
 
     def test_observe_mode_respects_schedule_without_force_rebalance(self):
-        kwargs = self._run_main("false")
-        self.assertFalse(kwargs["force_rebalance"])
-        self.assertFalse(kwargs["persist_state"])
-        self.assertFalse(kwargs["is_live_trade"])
+        calls = self._run_main("false")
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(calls[0].kwargs["force_rebalance"])
+        self.assertFalse(calls[0].kwargs["persist_state"])
+        self.assertFalse(calls[0].kwargs["is_live_trade"])
+        self.assertTrue(calls[1].kwargs["force_rebalance"])
+        self.assertFalse(calls[1].kwargs["persist_state"])
+        self.assertFalse(calls[1].kwargs["is_live_trade"])
 
     def test_observe_mode_can_still_force_rebalance_explicitly(self):
-        kwargs = self._run_main("true")
-        self.assertTrue(kwargs["force_rebalance"])
-        self.assertFalse(kwargs["persist_state"])
-        self.assertFalse(kwargs["is_live_trade"])
+        calls = self._run_main("true")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0].kwargs["force_rebalance"])
+        self.assertFalse(calls[0].kwargs["persist_state"])
+        self.assertFalse(calls[0].kwargs["is_live_trade"])
+        self.assertTrue(calls[1].kwargs["force_rebalance"])
+        self.assertFalse(calls[1].kwargs["persist_state"])
+        self.assertFalse(calls[1].kwargs["is_live_trade"])
 
     def test_app_state_is_required(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -163,6 +171,112 @@ class AlgoObserveModeTests(unittest.TestCase):
         self.assertIn("Portfolio Allocations:</strong>", kwargs["content"])
         self.assertIn("HYMB: 60.00%", kwargs["content"])
         self.assertNotIn("Diagnostics:", kwargs["content"])
+
+    def test_off_schedule_observe_export_uses_strategy_snapshot_positions(self):
+        env = dict(self.env)
+        env["SYNC_STRATEGY_JSON_TO_SPACES"] = "true"
+
+        off_schedule = {
+            "meta": {
+                "reason": "not a rebalance day",
+                "date": "2026-08-12",
+                "market_data_date": "2026-08-12",
+                "scheduled_rebalance_day": False,
+            },
+            "orders": [],
+        }
+        snapshot = {
+            "meta": {
+                "rebalance": True,
+                "scheduled_rebalance_day": True,
+                "date": "2026-08-12",
+                "market_data_date": "2026-08-12",
+                "gross_risky": 1.0,
+            },
+            "weights": {"HYMB": 0.6, "QLD": 0.2, "SMH": 0.2},
+            "orders": [],
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(self.algo, "load_dotenv"), patch.object(
+                self.algo, "find_dotenv", return_value=""
+            ):
+                with patch.object(self.algo.AlpacaAPI, "from_env") as from_env:
+                    with patch.object(
+                        self.algo, "run_single_iteration", side_effect=[off_schedule, snapshot]
+                    ):
+                        with patch.object(
+                            self.algo, "print_weights_table", return_value="weights output"
+                        ):
+                            with patch.object(self.algo, "export_strategy_json") as export_json:
+                                with patch.object(
+                                    self.algo, "upload_file_to_digitalocean_spaces"
+                                ):
+                                    with patch("builtins.print"):
+                                        from_env.return_value.get_account.return_value = (
+                                            types.SimpleNamespace(equity="1000")
+                                        )
+                                        self.algo.main()
+
+        exported_result = export_json.call_args.kwargs["result"]
+        self.assertEqual(
+            exported_result["weights"], {"HYMB": 0.6, "QLD": 0.2, "SMH": 0.2}
+        )
+        self.assertEqual(
+            exported_result["meta"]["reason"],
+            "not a rebalance day",
+        )
+        self.assertFalse(export_json.call_args.kwargs["trade_today"])
+
+    def test_off_schedule_observe_email_uses_strategy_snapshot_allocations(self):
+        env = dict(self.env)
+        env["EMAIL_POSITIONS"] = "true"
+        env["TO_ADDRESSES"] = "test@example.com"
+        env["FROM_ADDRESS"] = "from@example.com"
+
+        off_schedule = {
+            "meta": {
+                "reason": "not a rebalance day",
+                "date": "2026-08-12",
+                "market_data_date": "2026-08-12",
+                "scheduled_rebalance_day": False,
+            },
+            "orders": [],
+        }
+        snapshot = {
+            "meta": {
+                "rebalance": True,
+                "scheduled_rebalance_day": True,
+                "date": "2026-08-12",
+                "market_data_date": "2026-08-12",
+                "gross_risky": 1.0,
+            },
+            "weights": {"HYMB": 0.6, "QLD": 0.2, "SMH": 0.2},
+            "orders": [],
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(self.algo, "load_dotenv"), patch.object(
+                self.algo, "find_dotenv", return_value=""
+            ):
+                with patch.object(self.algo.AlpacaAPI, "from_env") as from_env:
+                    with patch.object(
+                        self.algo, "run_single_iteration", side_effect=[off_schedule, snapshot]
+                    ):
+                        with patch.object(
+                            self.algo, "print_weights_table", return_value="weights output"
+                        ):
+                            with patch.object(self.algo, "AmazonSES") as amazon_ses:
+                                with patch("builtins.print"):
+                                    from_env.return_value.get_account.return_value = (
+                                        types.SimpleNamespace(equity="1000")
+                                    )
+                                    self.algo.main()
+
+        kwargs = amazon_ses.return_value.send_html_email.call_args.kwargs
+        self.assertIn("Trade Today:</strong> No", kwargs["content"])
+        self.assertIn("Portfolio Allocations:</strong>", kwargs["content"])
+        self.assertIn("HYMB: 60.00%", kwargs["content"])
 
 
 if __name__ == "__main__":

@@ -49,6 +49,50 @@ def format_observe_allocations(weights: dict) -> list[str]:
     return [f"{symbol}: {weight * 100:.2f}%" for symbol, weight in non_zero]
 
 
+def build_strategy_snapshot_for_reporting(
+    portfolio: dict,
+    *,
+    api,
+    equity_cands: list[str],
+    other_sleeves: list[str],
+    cash: str,
+    ma_fixed: dict,
+    use_dynamic_vt: bool,
+    vt_regime_params: dict,
+    equity_fraction: float,
+) -> dict:
+    if ((portfolio or {}).get("weights") or {}):
+        return portfolio
+
+    snapshot = run_single_iteration(
+        api,
+        equity_cands=equity_cands,
+        other_sleeves=other_sleeves,
+        cash=cash,
+        ma_fixed=ma_fixed,
+        use_dynamic_vt=use_dynamic_vt,
+        vt_regime_params=vt_regime_params,
+        equity_fraction=equity_fraction,
+        force_rebalance=True,
+        is_live_trade=False,
+        ignore_liquidation_symbols=None,
+        persist_state=False,
+    )
+
+    base_meta = (portfolio or {}).get("meta", {}) or {}
+    snapshot_meta = (snapshot or {}).get("meta", {}) or {}
+    merged_meta = dict(snapshot_meta)
+    for key in ("reason", "scheduled_rebalance_day", "date", "market_data_date"):
+        if key in base_meta:
+            merged_meta[key] = base_meta[key]
+
+    return {
+        "meta": merged_meta,
+        "weights": (snapshot or {}).get("weights", {}) or {},
+        "orders": [],
+    }
+
+
 def get_app_state() -> str:
     app_state = (os.getenv("APP_STATE") or os.getenv("RUN_MODE") or "").strip().upper()
     valid_states = {"LIVE", "PAPER", "OBSERVE"}
@@ -110,15 +154,35 @@ def main():
         ignore_liquidation_symbols=None,
         persist_state=not is_observe,
     )
-    out = print_weights_table(portfolio) if is_observe else print_orders_table(portfolio)
     scheduled_trade_today = result_trade_today(portfolio)
     meta = (portfolio or {}).get("meta", {}) or {}
+    reporting_portfolio = portfolio
+
+    if is_observe and not scheduled_trade_today:
+        reporting_portfolio = build_strategy_snapshot_for_reporting(
+            portfolio,
+            api=api,
+            equity_cands=EQUITY_CANDS,
+            other_sleeves=OTHER_SLEEVES,
+            cash=CASH,
+            ma_fixed=MA_FIXED,
+            use_dynamic_vt=use_dynamic_vt,
+            vt_regime_params=vt_map,
+            equity_fraction=equity_fraction,
+        )
+    reporting_meta = (reporting_portfolio or {}).get("meta", {}) or {}
+    out = (
+        print_weights_table(reporting_portfolio)
+        if is_observe
+        else print_orders_table(portfolio)
+    )
 
     if sync_strategy_json_to_spaces:
+
         output_path = "etf-trend-rp-vt.json"
         log(f"Export Strategy Results: {output_path}", "info")
         export_strategy_json(
-            result=portfolio,
+            result=reporting_portfolio,
             output_path=output_path,
             strategy_name="trend",
             equity_fraction=equity_fraction,
@@ -143,8 +207,8 @@ def main():
         str(next_rebalance_day(run_date, REB).date()) if run_date is not None else "N/A"
     )
     allocation_lines = (
-        format_observe_allocations((portfolio or {}).get("weights", {}))
-        if is_observe and scheduled_trade_today
+        format_observe_allocations((reporting_portfolio or {}).get("weights", {}))
+        if is_observe
         else []
     )
     message_body_html = (
@@ -167,6 +231,11 @@ def main():
             message_body_plain += (
                 "Portfolio Allocations:\n" + "\n".join(allocation_lines) + "\n\n"
             )
+        elif reporting_meta.get("reason"):
+            message_body_html += (
+                f"<strong>Portfolio Allocations:</strong> none<br><br>"
+            )
+            message_body_plain += "Portfolio Allocations: none\n\n"
     message_body_html += "<pre>" + out.replace("\n", "<br>") + "</pre>"
     message_body_plain += out
 
